@@ -858,6 +858,7 @@ def run_level_marker():
     
     # --- EXECUTION TRIGGER LOGIC ---
     buffer = 15  # 15-point buffer to ensure a true breakout
+    fakeout_buffer = 5  # 5-point buffer to warn of a fakeout
     
     st.markdown("#### 🎯 NY Open Sniper Triggers")
     
@@ -865,6 +866,12 @@ def run_level_marker():
         # Check if inside the range (NO-TRADE ZONE)
         if current_price > ny_low and current_price < ny_high:
             st.warning("⛔ **WAIT ZONE:** Price is currently trapped inside the NY Pre-Market Range. DO NOT TRADE. Wait for a break of High or Low.")
+        
+        # Check for proximity to trigger (Fakeout Warning)
+        if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
+            st.error("⚠️ **FAKEOUT WARNING:** Price is within 5 points of the NY High. Watch for a brief spike (fakeout) that immediately reverses before entering.")
+        if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
+            st.error("⚠️ **FAKEOUT WARNING:** Price is within 5 points of the NY Low. Watch for a brief dip (fakeout) that immediately reverses before entering.")
         
         # LONG TRIGGER
         long_entry = ny_high + buffer
@@ -1199,8 +1206,8 @@ def run_ict_backtest():
     def run_backtest_on_asset(data, asset_name, lookback, rsi_low, rsi_high, rr, buffer):
         data = data.copy()
         data.columns = [col.capitalize() for col in data.columns]
-        data = data.dropna()
         
+        # 1. CALCULATE INDICATORS FIRST (Before dropping anything)
         data['High_L'] = data['High'].rolling(lookback).max()
         data['Low_L'] = data['Low'].rolling(lookback).min()
         data['EMA_200'] = data['Close'].ewm(span=200, adjust=False).mean()
@@ -1217,6 +1224,10 @@ def run_ict_backtest():
         bear_cond = (data['Close'] < data['Open']) & (data['Open'] - data['Close'] > 0.75 * (data['High'] - data['Low']))
         data.loc[bear_cond, 'Order_Block'] = data.loc[bear_cond, 'High']
         
+        # 2. NOW Drop NaNs (Only after calculations are done)
+        data = data.dropna()
+        
+        # 3. RUN THE BACKTEST
         class InteractiveICTStrategy(Strategy):
             def init(self):
                 super().init()
@@ -1542,29 +1553,81 @@ def run_app():
         st.subheader("🤖 AI & Semiconductor Bubble Watch")
         st.caption("Real-time risk radar for NVDA and SMH. 0-100 Risk Score based on technicals, macro, and pre-market sentiment.")
         try:
-            nvda=yf.Ticker("NVDA").history(period="6mo"); smh=yf.Ticker("SMH").history(period="6mo"); mnq=yf.Ticker("MNQ=F").history(period="1d",interval="5m"); dxy=yf.Ticker("DX-Y.NYB").history(period="1d",interval="5m"); tnx=yf.Ticker("^TNX").history(period="1d",interval="5m")
-            if not nvda.empty and not smh.empty and not mnq.empty:
-                nvda_price=nvda['Close'].iloc[-1]; nvda_200=sma(nvda['Close'].tolist(),200); smh_price=smh['Close'].iloc[-1]; smh_200=sma(smh['Close'].tolist(),200); dxy_val=dxy['Close'].iloc[-1]; tnx_val=tnx['Close'].iloc[-1]; mnq_change=((mnq['Close'].iloc[-1]-mnq['Close'].iloc[0])/mnq['Close'].iloc[0])*100
-                risk_score=0; warnings=[]
-                if nvda_price>nvda_200: risk_score+=0
-                elif nvda_price>nvda_200*0.95: risk_score+=15; warnings.append("⚠️ NVDA approaching 200-DMA")
-                else: risk_score+=30; warnings.append("🔴 NVDA BROKEN 200-DMA")
-                if smh_price>smh_200: risk_score+=0
-                elif smh_price>smh_200*0.95: risk_score+=15; warnings.append("⚠️ SMH approaching 200-DMA")
-                else: risk_score+=30; warnings.append("🔴 SMH BROKEN 200-DMA")
-                if dxy_val>105 or tnx_val>4.8: risk_score+=20; warnings.append("🔴 High Macro Pressure (DXY > 105 / Yields > 4.8%)")
-                elif dxy_val>103 or tnx_val>4.5: risk_score+=10; warnings.append("⚠️ Moderate Macro Pressure")
-                if mnq_change<-1.5: risk_score+=20; warnings.append("🔴 MNQ Pre-Market Down > 1.5%")
-                elif mnq_change<-0.5: risk_score+=10; warnings.append("⚠️ MNQ Pre-Market Weak")
-                if risk_score>=70: alert_color="#f87171"; alert_icon="🔴"; alert_text="HIGH RISK: AI BUBBLE ALERT"
-                elif risk_score>=40: alert_color="#facc15"; alert_icon="🟡"; alert_text="MODERATE RISK: Caution Advised"
-                else: alert_color="#4ade80"; alert_icon="🟢"; alert_text="LOW RISK: All Clear"
-                col_b1,col_b2=st.columns([1,2])
-                with col_b1: st.markdown(f"<div class='eco-card'><h3 style='color: {alert_color};'>{alert_icon} {alert_text}</h3><h1 style='color: {alert_color}; font-size: 48px;'>{risk_score}/100</h1><small>Risk Score</small></div>", unsafe_allow_html=True)
-                with col_b2: st.markdown(f"<div class='eco-card'><h4>📊 Key Metrics</h4><b>NVDA:</b> ${nvda_price:.2f} (200-DMA: ${nvda_200:.2f})<br><b>SMH:</b> ${smh_price:.2f} (200-DMA: ${smh_200:.2f})<br><b>DXY:</b> {dxy_val:.2f} | <b>10Y Yield:</b> {tnx_val:.2f}%<br><b>MNQ Pre-Market:</b> {'🟢' if mnq_change>0 else '🔴'} {mnq_change:.2f}%</div>", unsafe_allow_html=True)
-                if warnings: st.warning("**⚠️ Bubble Watch Alerts:** " + " | ".join(warnings))
-            else: st.info("Bubble Watch data loading... (Markets may be closed)")
-        except Exception: st.info("Unable to load AI Bubble Watch data at this time.")
+            nvda = yf.Ticker("NVDA").history(period="6mo")
+            smh = yf.Ticker("SMH").history(period="6mo")
+            mnq = yf.Ticker("MNQ=F").history(period="1d", interval="5m")
+            dxy = yf.Ticker("DX-Y.NYB").history(period="1d", interval="5m")
+            tnx = yf.Ticker("^TNX").history(period="1d", interval="5m")
+            
+            # 1. Handle missing data safely without crashing
+            if nvda.empty: 
+                nvda_price = 0.0; nvda_200 = 0.0
+            else: 
+                nvda_price = nvda['Close'].iloc[-1]
+                nvda_200 = sma(nvda['Close'].tolist(), 200)
+                
+            if smh.empty: 
+                smh_price = 0.0; smh_200 = 0.0
+            else:
+                smh_price = smh['Close'].iloc[-1]
+                smh_200 = sma(smh['Close'].tolist(), 200)
+                
+            if mnq.empty or dxy.empty or tnx.empty:
+                dxy_val = 0.0; tnx_val = 0.0; mnq_change = 0.0
+            else:
+                dxy_val = dxy['Close'].iloc[-1]
+                tnx_val = tnx['Close'].iloc[-1]
+                mnq_change = ((mnq['Close'].iloc[-1] - mnq['Close'].iloc[0]) / mnq['Close'].iloc[0]) * 100
+
+            # 2. Calculate Risk Score
+            risk_score = 0
+            warnings = []
+            
+            # NVDA Status
+            if nvda_price > 0 and nvda_200 > 0:
+                if nvda_price > nvda_200: risk_score += 0
+                elif nvda_price > nvda_200 * 0.95: risk_score += 15; warnings.append("⚠️ NVDA approaching 200-DMA")
+                else: risk_score += 30; warnings.append("🔴 NVDA BROKEN 200-DMA")
+            
+            # SMH Status
+            if smh_price > 0 and smh_200 > 0:
+                if smh_price > smh_200: risk_score += 0
+                elif smh_price > smh_200 * 0.95: risk_score += 15; warnings.append("⚠️ SMH approaching 200-DMA")
+                else: risk_score += 30; warnings.append("🔴 SMH BROKEN 200-DMA")
+            
+            # Macro Pressure
+            if dxy_val > 105 or tnx_val > 4.8: risk_score += 20; warnings.append("🔴 High Macro Pressure (DXY > 105 / Yields > 4.8%)")
+            elif dxy_val > 103 or tnx_val > 4.5: risk_score += 10; warnings.append("⚠️ Moderate Macro Pressure")
+            
+            # Pre-Market
+            if mnq_change < -1.5: risk_score += 20; warnings.append("🔴 MNQ Pre-Market Down > 1.5%")
+            elif mnq_change < -0.5: risk_score += 10; warnings.append("⚠️ MNQ Pre-Market Weak")
+            
+            # 3. Render the Metrics with F-string formatting (handles 0.0)
+            nvda_price_str = f"${nvda_price:.2f}" if nvda_price > 0 else "Loading..."
+            nvda_200_str = f"${nvda_200:.2f}" if nvda_200 > 0 else "Loading..."
+            
+            smh_price_str = f"${smh_price:.2f}" if smh_price > 0 else "Loading..."
+            smh_200_str = f"${smh_200:.2f}" if smh_200 > 0 else "Loading..."
+            
+            # 4. Determine the Alert Color and Icon
+            if risk_score >= 70: alert_color="#f87171"; alert_icon="🔴"; alert_text="HIGH RISK: AI BUBBLE ALERT"
+            elif risk_score >= 40: alert_color="#facc15"; alert_icon="🟡"; alert_text="MODERATE RISK: Caution Advised"
+            else: alert_color="#4ade80"; alert_icon="🟢"; alert_text="LOW RISK: All Clear"
+            
+            # 5. Render the UI Cards
+            col_b1, col_b2 = st.columns([1, 2])
+            with col_b1: 
+                st.markdown(f"<div class='eco-card'><h3 style='color: {alert_color};'>{alert_icon} {alert_text}</h3><h1 style='color: {alert_color}; font-size: 48px;'>{risk_score}/100</h1><small>Risk Score</small></div>", unsafe_allow_html=True)
+            with col_b2: 
+                st.markdown(f"<div class='eco-card'><h4>📊 Key Metrics</h4><b>NVDA:</b> {nvda_price_str} (200-DMA: {nvda_200_str})<br><b>SMH:</b> {smh_price_str} (200-DMA: {smh_200_str})<br><b>DXY:</b> {dxy_val:.2f} | <b>10Y Yield:</b> {tnx_val:.2f}%<br><b>MNQ Pre-Market:</b> {'🟢' if mnq_change>0 else '🔴'} {mnq_change:.2f}%</div>", unsafe_allow_html=True)
+            
+            # 6. Render Warnings
+            if warnings: st.warning("**⚠️ Bubble Watch Alerts:** " + " | ".join(warnings))
+            
+        except Exception as e:
+            # If ANYTHING goes wrong (API down), show this clean message instead of crashing
+            st.warning(f"🤖 AI Bubble Watch is temporarily offline (Yahoo API delay). Data will load shortly.")
 
     with main_tab5:
         render_dxy_dashboard()
