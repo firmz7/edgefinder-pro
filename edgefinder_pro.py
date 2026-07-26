@@ -336,16 +336,29 @@ def render_dxy_dashboard():
  st.markdown("---"); drivers=get_macro_drivers("DXY"); render_macro_drivers(drivers)
  
  st.markdown("### 🏦 Intraday Treasury Yields")
- st.caption("5-Minute chart of 10Y and 30Y Treasury yields. Moves inversely to stocks.")
+ st.caption("5-Minute chart of 10Y, 30Y Treasury yields, and their spread. Moves inversely to stocks.")
  try:
-  tnx_intra = yf.Ticker("^TNX").history(period="1d", interval="5m")
-  tyx_intra = yf.Ticker("^TYX").history(period="1d", interval="5m")
+  tnx_intra = yf.Ticker("^TNX").history(period="2d", interval="5m")
+  tyx_intra = yf.Ticker("^TYX").history(period="2d", interval="5m")
   if not tnx_intra.empty and not tyx_intra.empty:
+   spread = tyx_intra['Close'] - tnx_intra['Close']
    fig2 = go.Figure()
    fig2.add_trace(go.Scatter(x=tnx_intra.index, y=tnx_intra['Close'], mode='lines', name='10Y Yield (^TNX)', line=dict(color='gold', width=2)))
    fig2.add_trace(go.Scatter(x=tyx_intra.index, y=tyx_intra['Close'], mode='lines', name='30Y Yield (^TYX)', line=dict(color='purple', width=2)))
-   fig2.update_layout(height=300, paper_bgcolor="#0f1116", plot_bgcolor="#0f1116", font={"color": "#e8ecf1"}, xaxis_rangeslider_visible=False)
+   fig2.add_trace(go.Scatter(x=spread.index, y=spread, mode='lines', name='30Y-10Y Spread', line=dict(color='cyan', width=1.5, dash='dash')))
+   fig2.update_layout(height=350, paper_bgcolor="#0f1116", plot_bgcolor="#0f1116", font={"color": "#e8ecf1"}, xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
    st.plotly_chart(fig2, width='stretch')
+   
+   current_spread = spread.iloc[-1] if not spread.empty else 0
+   spread_color = "#f87171" if current_spread < 0 else "#4ade80"
+   st.markdown(f"""
+   <div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin-top: 10px;'>
+       <b>30Y-10Y Spread:</b> <span style='color: {spread_color}; font-weight: bold;'>{current_spread:.2f}%</span>
+       <span style='color: #a0aec0; font-size: 14px; margin-left: 15px;'>
+           {'🔴 Inverted Curve - Recession Warning' if current_spread < 0 else '🟢 Steep Curve - Growth Optimism'}
+       </span>
+   </div>
+   """, unsafe_allow_html=True)
   else: st.info("Yield data unavailable outside trading hours.")
  except: pass
 
@@ -360,14 +373,12 @@ def render_asset(asset_key,auto_save):
   c_i1,c_i2,c_i3,c_i4,c_i5=st.columns(5); c_i1.metric("Price",f"{intraday['current_price']:.2f}"); c_i2.metric("VWAP",f"{intraday['vwap']:.2f}"); c_i3.metric("9 EMA",f"{intraday['ema9']:.2f}"); c_i4.metric("20 EMA",f"{intraday['ema20']:.2f}"); c_i5.metric("50 EMA",f"{intraday['ema50']:.2f}")
   
   # --- FIX: Switch to Finviz for unrestricted free chart embedding ---
-  # Map Yahoo tickers to Finviz format (stripping =F and ^ symbols)
   finviz_ticker = cfg['ticker']
   if finviz_ticker.endswith("=F"):
       finviz_ticker = finviz_ticker.replace("=F", "")
   elif finviz_ticker.startswith("^"):
       finviz_ticker = finviz_ticker.replace("^", "")
       
-  # Special overrides for specific indices that Finviz recognizes differently
   if cfg['symbol'] == "US10Y":
       finviz_ticker = "US10Y"
   elif cfg['symbol'] == "US30Y":
@@ -377,10 +388,11 @@ def render_asset(asset_key,auto_save):
   elif cfg['symbol'] == "DXY":
       finviz_ticker = "DXY"
 
-  # Render the Finviz chart
-  st.iframe(f"https://finviz.com/chart.ashx?t={finviz_ticker}&ty=c&ta=1&p=d&s=l", height=500, width='stretch')
-  # ----------------------------------------------------------------
-
+  st.components.v1.html(f"""
+  <iframe src="https://finviz.com/chart.ashx?t={finviz_ticker}&ty=c&ta=1&p=d&s=l" 
+          width="100%" height="500" frameborder="0" scrolling="no">
+  </iframe>
+  """, height=500)
  t1,t2,t3,t4=st.tabs(["Technical Scores","Macro Scores","Historical Trend","📊 Macro Drivers"])
  with t1:
   df=pd.DataFrame([{"Indicator":x.name,"Value":round(x.value,4),"Score":x.score,"Bias":x.bias.value} for x in snapshot.technical_details])
@@ -426,14 +438,12 @@ def load_recent(symbol,limit=30)->List[Dict]:
 def build_swing_snapshot(config,macro,news)->AssetSnapshot:
     ticker=config["ticker"]
     
-    # --- FIX: Safe fetch prevents index errors on empty data ---
     try:
         daily = yf.Ticker(ticker).history(period="6mo")
         if daily.empty:
             daily = yf.Ticker(ticker).history(period="1mo")
         
         if daily.empty:
-            # Absolute fallback if no historical data at all
             closes = [100.0]
             p = 100.0
             r = 50.0
@@ -458,7 +468,6 @@ def build_swing_snapshot(config,macro,news)->AssetSnapshot:
                 IndicatorReading("Trend vs 50D MA %", tp, score_trend_pct(tp), score_to_bias(score_trend_pct(tp)))
             ]
     except Exception:
-        # Catch any unexpected errors and return neutral fallback
         closes = [100.0]
         p = 100.0
         r = 50.0
@@ -470,7 +479,6 @@ def build_swing_snapshot(config,macro,news)->AssetSnapshot:
             IndicatorReading("RSI 14", r, score_rsi(r), score_to_bias(score_rsi(r))),
             IndicatorReading("Trend vs 50D MA %", tp, score_trend_pct(tp), score_to_bias(score_trend_pct(tp)))
         ]
-    # ------------------------------------------------------------
 
     inv=config.get("inverse_dxy",False); safe=config.get("safe_haven",False); md=[IndicatorReading("DXY",macro["dxy"],score_dxy(macro["dxy"],inv),score_to_bias(score_dxy(macro["dxy"],inv))),IndicatorReading("VIX",macro["vix"],score_vix(macro["vix"],safe),score_to_bias(score_vix(macro["vix"],safe))),IndicatorReading("Real Yield",macro["real_yield_10y"],score_real_yield(macro["real_yield_10y"],inv),score_to_bias(score_real_yield(macro["real_yield_10y"],inv)))]; ms=sum([x.score for x in md])//3; ns=score_news(news.get("sentiment",0.0)); o=int(round(ts*0.45+ms*0.30+ns*0.25)); return AssetSnapshot(symbol=config["symbol"],name=config["name"],price=p,technical_score=ts,macro_score=ms,news_score=ns,overall_score=o,overall_bias=score_to_bias(o),technical_details=td,macro_details=md,news_details=[IndicatorReading("News Sentiment",news.get("sentiment",0),ns,score_to_bias(ns))])
 
@@ -494,8 +502,6 @@ def run_order_flow_scanner():
     st.caption("Detects institutional Order Blocks and Liquidity Sweeps across 4H, 1H, and 15m timeframes for MNQ and MGC.")
     
     with st.spinner("Scanning multiple timeframes for Order Blocks and Liquidity Sweeps..."):
-        # FIX: Replace '1w' period with '5d' to avoid Yahoo error. 
-        # FIX: Automatically correct symbols to "=F" for Yahoo.
         mnq_4h = yf.Ticker("MNQ=F").history(period="5d", interval="1h")  
         mnq_1h = yf.Ticker("MNQ=F").history(period="5d", interval="1h")
         mnq_15m = yf.Ticker("MNQ=F").history(period="2d", interval="15m")
@@ -508,19 +514,15 @@ def run_order_flow_scanner():
         st.warning("No data available for one or more timeframes. Market may be closed.")
         return
     
-    # --- HELPER FUNCTIONS ---
     def detect_order_blocks(data, timeframe_name):
-        """Detects Order Blocks (strong candles) in the given data"""
         ob = []
         for i in range(1, len(data)-1):
             candle = data.iloc[i]
             body = abs(candle['Close'] - candle['Open'])
             total_range = candle['High'] - candle['Low']
             
-            # Ensure we have a valid range
             if total_range == 0: continue
             
-            # Strong bullish candle (body > 60% of range)
             if candle['Close'] > candle['Open'] and (body / total_range) > 0.60:
                 ob.append({
                     'Timeframe': timeframe_name,
@@ -529,7 +531,6 @@ def run_order_flow_scanner():
                     'Level': round(candle['Low'], 2),
                     'Body%': f"{round((body/total_range)*100, 0)}%"
                 })
-            # Strong bearish candle (body > 60% of range)
             elif candle['Close'] < candle['Open'] and (body / total_range) > 0.60:
                 ob.append({
                     'Timeframe': timeframe_name,
@@ -541,14 +542,12 @@ def run_order_flow_scanner():
         return ob
     
     def detect_liquidity_sweeps(data, lookback=20, timeframe_name="15m"):
-        """Detects Liquidity Sweeps (wicks that reverse)"""
         sweeps = []
         high_20 = data['High'].rolling(lookback).max()
         low_20 = data['Low'].rolling(lookback).min()
         
         for i in range(lookback, len(data)-1):
             candle = data.iloc[i]
-            # Sweep above high (Liquidity grab + reversal)
             if candle['High'] > high_20.iloc[i-1] and candle['Close'] < candle['Open']:
                 sweeps.append({
                     'Timeframe': timeframe_name,
@@ -557,7 +556,6 @@ def run_order_flow_scanner():
                     'Sweep Level': round(candle['High'], 2),
                     'Close': round(candle['Close'], 2)
                 })
-            # Sweep below low (Liquidity grab + reversal)
             elif candle['Low'] < low_20.iloc[i-1] and candle['Close'] > candle['Open']:
                 sweeps.append({
                     'Timeframe': timeframe_name,
@@ -568,10 +566,8 @@ def run_order_flow_scanner():
                 })
         return sweeps
     
-    # --- PROCESS MNQ ---
     st.markdown("### 📈 MNQ (Micro Nasdaq) Multi-Timeframe Order Flow")
     
-    # Detect for each timeframe
     ob_4h_mnq = detect_order_blocks(mnq_4h, "4H")
     ob_1h_mnq = detect_order_blocks(mnq_1h, "1H")
     ob_15m_mnq = detect_order_blocks(mnq_15m, "15m")
@@ -580,7 +576,6 @@ def run_order_flow_scanner():
     sweeps_1h_mnq = detect_liquidity_sweeps(mnq_1h, 20, "1H")
     sweeps_15m_mnq = detect_liquidity_sweeps(mnq_15m, 20, "15m")
     
-    # FIX: Convert to DF and clean the 'Score' column before rendering to avoid PyArrow crash
     def clean_df_for_render(df):
         if df.empty: return df
         if 'Score' not in df.columns:
@@ -589,7 +584,6 @@ def run_order_flow_scanner():
             df['Score'] = pd.to_numeric(df['Score'], errors='coerce').fillna(0).astype(int)
         return df
 
-    # Display Results in 3 Columns
     col_ob1, col_ob2, col_ob3 = st.columns(3)
     with col_ob1:
         st.markdown("#### ⏳ 4H Order Blocks")
@@ -629,7 +623,6 @@ def run_order_flow_scanner():
             st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_15m_mnq)), width='stretch', hide_index=True)
         else: st.info("No 15m sweeps yet.")
     
-    # --- PROCESS MGC ---
     st.markdown("---")
     st.markdown("🥇 MGC (Micro Gold) Multi-Timeframe Order Flow")
     
@@ -899,13 +892,56 @@ def run_cheat_sheet():
     </div>
     """, unsafe_allow_html=True)
 
+    st.markdown("---")
+    
+    # ============ 30-YEAR YIELD BENCHMARK SECTION ============
+    st.markdown("### 🧠 What the 30-Year Yield tells you")
+    st.caption("The 30-Year Treasury Yield is the ultimate long-term economic signal. Here's how to read it:")
+    
+    col_30_1, col_30_2, col_30_3 = st.columns(3)
+    
+    with col_30_1:
+        st.markdown("""
+        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border: 1px solid #4ade80; text-align: center; height: 100%;'>
+            <h4 style='color: #4ade80;'>📈 Normal Curve</h4>
+            <h3 style='color: #4ade80; margin: 0;'>US30Y > US10Y</h3>
+            <p style='font-size: 13px; margin-top: 10px; color: #e8ecf1;'>
+                The market expects <b>long-term growth</b> and inflation.<br><br>
+                📌 <b>Action:</b> Risk-on environment. Long NQ and stocks are favored.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_30_2:
+        st.markdown("""
+        <div style='background-color: #3a2a1a; padding: 15px; border-radius: 8px; border: 1px solid #facc15; text-align: center; height: 100%;'>
+            <h4 style='color: #facc15;'>📉 Inverted Curve</h4>
+            <h3 style='color: #facc15; margin: 0;'>US30Y < US10Y</h3>
+            <p style='font-size: 13px; margin-top: 10px; color: #e8ecf1;'>
+                The market expects a <b>recession</b> in the near future.<br><br>
+                📌 <b>Action:</b> Reduce risk. Short NQ, watch for safe-haven flows into Gold.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_30_3:
+        st.markdown("""
+        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border: 1px solid #f87171; text-align: center; height: 100%;'>
+            <h4 style='color: #f87171;'>🚨 Crisis Signal</h4>
+            <h3 style='color: #f87171; margin: 0;'>US30Y > 5.0%</h3>
+            <p style='font-size: 13px; margin-top: 10px; color: #e8ecf1;'>
+                Global investors are <b>dumping US debt</b>. This is a crisis signal.<br><br>
+                📌 <b>Action:</b> Extreme caution. Gold becomes a safe-haven. Expect severe volatility.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
 # ============ EXECUTION ENGINE: NY OPEN BREAKOUT SCANNER ============
 def run_level_marker():
     st.subheader("🎯 NY Open Execution Engine")
     st.caption("No guesses. No opinions. Just sniper triggers for the NY Open based on Pre-Market levels.")
     
     with st.spinner("AI scanning session data for sniper triggers..."):
-        # FIX: Period changed to safe '2d' for Yahoo
         mnq_data = yf.Ticker("MNQ=F").history(period="2d", interval="1m")
         mgc_data = yf.Ticker("MGC=F").history(period="2d", interval="1m")
     
@@ -915,17 +951,15 @@ def run_level_marker():
     
     today = datetime.now().date()
     
-    # --- GET MACRO DATA FOR FILTERS ---
     macro = get_macro_data()
     tnx_val = macro['yield_10y']
+    tyx_val = macro['yield_30y']
     dxy_val = macro['dxy']
     
-    # --- PROCESS MNQ EXECUTION TRIGGERS ---
     st.markdown("### 📈 MNQ (Micro Nasdaq) Execution Triggers")
     mnq_today = mnq_data[mnq_data.index.date == today]
     mnq_prev = mnq_data[mnq_data.index.date == (today - timedelta(days=1))]
     
-    # 1. Asia Session (5:00 PM - 11:59 PM Previous Day)
     asia_mnq = mnq_prev.between_time('17:00', '23:59')
     if not asia_mnq.empty:
         asia_high = asia_mnq['High'].max()
@@ -936,7 +970,6 @@ def run_level_marker():
     else:
         asia_high = asia_low = asia_sell = asia_buy = 0
     
-    # 2. London Session (2:00 AM - 9:29 AM)
     london_mnq = mnq_today.between_time('02:00', '09:29')
     if not london_mnq.empty:
         london_high = london_mnq['High'].max()
@@ -947,7 +980,6 @@ def run_level_marker():
     else:
         london_high = london_low = london_sell = london_buy = 0
     
-    # 3. NY Pre-Market (8:00 AM - 9:29 AM)
     ny_mnq = mnq_today.between_time('08:00', '09:29')
     if not ny_mnq.empty:
         ny_high = ny_mnq['High'].max()
@@ -959,34 +991,28 @@ def run_level_marker():
     else:
         ny_high = ny_low = ny_sell = ny_buy = current_price = 0
     
-    # --- EXECUTION TRIGGER LOGIC ---
-    buffer = 15  # 15-point buffer to ensure a true breakout
-    fakeout_buffer = 5  # 5-point buffer to warn of a fakeout
+    buffer = 15
+    fakeout_buffer = 5
     
     st.markdown("#### 🎯 NY Open Sniper Triggers")
     
     if current_price > 0:
-        # Check if inside the range (NO-TRADE ZONE)
         if current_price > ny_low and current_price < ny_high:
             st.warning("⛔ **WAIT ZONE:** Price is currently trapped inside the NY Pre-Market Range. DO NOT TRADE. Wait for a break of High or Low.")
         
-        # Check for proximity to trigger (Fakeout Warning)
         if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
             st.error("⚠️ **FAKEOUT WARNING:** Price is within 5 points of the NY High. Watch for a brief spike (fakeout) that immediately reverses before entering.")
         if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
             st.error("⚠️ **FAKEOUT WARNING:** Price is within 5 points of the NY Low. Watch for a brief dip (fakeout) that immediately reverses before entering.")
         
-        # LONG TRIGGER
         long_entry = ny_high + buffer
-        long_stop_loss = ny_high - 10  # Tighter stop for breakouts
+        long_stop_loss = ny_high - 10
         long_take_profit = long_entry + (ny_range * 1.5)
         
-        # SHORT TRIGGER
         short_entry = ny_low - buffer
         short_stop_loss = ny_low + 10
         short_take_profit = short_entry - (ny_range * 1.5)
         
-        # LOGIC CHECK: If Yield is above 4.3%, we kill Gold trading (applied below)
         col_trigger1, col_trigger2 = st.columns(2)
         with col_trigger1:
             st.markdown(f"""
@@ -1019,11 +1045,9 @@ def run_level_marker():
     with c2: st.metric("London High/Low", f"{london_high:.2f} / {london_low:.2f}")
     with c3: st.metric("NY Pre-Market High/Low", f"{ny_high:.2f} / {ny_low:.2f}")
     
-    # --- PROCESS MGC EXECUTION TRIGGERS (WITH HARD FILTERS) ---
     st.markdown("---")
     st.markdown("🥇 MGC (Micro Gold) Execution Triggers")
     
-    # EXECUTION FILTER: Gold is dead if yields are high
     if tnx_val > 4.3:
         st.error("⛔ **HARD STOP:** 10-Year Yield is above 4.3%. Gold is structurally broken in this environment. No trades recommended.")
     else:
@@ -1310,7 +1334,6 @@ def run_ict_backtest():
         data = data.copy()
         data.columns = [col.capitalize() for col in data.columns]
         
-        # 1. CALCULATE INDICATORS FIRST (Before dropping anything)
         data['High_L'] = data['High'].rolling(lookback).max()
         data['Low_L'] = data['Low'].rolling(lookback).min()
         data['EMA_200'] = data['Close'].ewm(span=200, adjust=False).mean()
@@ -1327,10 +1350,8 @@ def run_ict_backtest():
         bear_cond = (data['Close'] < data['Open']) & (data['Open'] - data['Close'] > 0.75 * (data['High'] - data['Low']))
         data.loc[bear_cond, 'Order_Block'] = data.loc[bear_cond, 'High']
         
-        # 2. NOW Drop NaNs (Only after calculations are done)
         data = data.dropna()
         
-        # 3. RUN THE BACKTEST
         class InteractiveICTStrategy(Strategy):
             def init(self):
                 super().init()
@@ -1439,6 +1460,7 @@ def save_trade(symbol, direction, entry, sl, tp, macro_data, notes):
 
 def get_recent_trades(limit=20):
     conn = sqlite3.connect(DB_JOURNAL_PATH)
+    conn.row_factory = sqlite3.Row
     rows = conn.execute("""
     SELECT id, ts_utc, symbol, direction, entry_price, stop_loss, take_profit, exit_price, outcome, pnl, macro_snapshot, notes 
     FROM trades ORDER BY id DESC LIMIT ?
@@ -1450,7 +1472,6 @@ def run_journal_tab():
     st.subheader("📝 Private Discretionary Trading Journal")
     st.caption("Log your macro context, entries, and 'gut feelings' to build your ultimate rulebook.")
     
-    # Get fresh macro data to attach to the entry
     macro = get_macro_data()
     
     with st.expander("➕ Log New Trade Entry", expanded=True):
@@ -1468,10 +1489,10 @@ def run_journal_tab():
         j_notes = st.text_area("Why did you take this trade? Did the price action feel right, or wrong?", height=100)
         
         if st.button("📌 Log This Trade", type="primary"):
-            # Save macro snapshot with the trade
             macro_snap = {
                 "dxy": macro['dxy'],
                 "yield_10y": macro['yield_10y'],
+                "yield_30y": macro['yield_30y'],
                 "vix": macro['vix']
             }
             save_trade(j_symbol, j_direction, j_entry, j_stop, j_target, macro_snap, j_notes)
@@ -1484,14 +1505,12 @@ def run_journal_tab():
     
     if trades:
         df = pd.DataFrame(trades)
-        # Convert timestamp for readability
         df['ts_utc'] = pd.to_datetime(df['ts_utc']).dt.strftime('%Y-%m-%d %H:%M')
         
-        # Display table
         st.dataframe(df[['ts_utc', 'symbol', 'direction', 'entry_price', 'stop_loss', 'take_profit', 'outcome']], width='stretch', hide_index=True)
         
         st.markdown("#### 📖 Expand to Read Entry Notes")
-        for trade in trades[:3]: # Show latest 3 detailed
+        for trade in trades[:3]:
             with st.expander(f"View {trade['symbol']} Trade on {trade['ts_utc']}"):
                 st.markdown(f"**Direction:** {trade['direction']} | **Entry:** {trade['entry_price']} | **SL:** {trade['stop_loss']} | **TP:** {trade['take_profit']}")
                 
@@ -1500,7 +1519,7 @@ def run_journal_tab():
                 
                 st.markdown("**Macro at Entry:**")
                 macro_data = json.loads(trade['macro_snapshot'])
-                st.caption(f"DXY: {macro_data['dxy']:.2f} | 10Y Yield: {macro_data['yield_10y']:.2f}% | VIX: {macro_data['vix']:.2f}")
+                st.caption(f"DXY: {macro_data['dxy']:.2f} | 10Y Yield: {macro_data['yield_10y']:.2f}% | 30Y Yield: {macro_data['yield_30y']:.2f}% | VIX: {macro_data['vix']:.2f}")
                 
                 if trade['notes']:
                     st.markdown("**🧠 Trader's Notes:**")
@@ -1509,12 +1528,13 @@ def run_journal_tab():
         st.info("No trades logged yet. Start your trading journal today!")
 
 def run_app():
-    load_dotenv(); init_db(); init_journal_db()
+    load_dotenv()
+    init_db()
+    init_journal_db()
     st.set_page_config(page_title="EdgeFinder Pro - Terminal", layout="wide")
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    # ============ MAIN TABS ============
     main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
@@ -1537,7 +1557,6 @@ def run_app():
     alert_price = st.sidebar.number_input("⚠️ Alert Price (Trigger)", value=0.0, step=1.0)
     alert_asset = st.sidebar.selectbox("Alert Asset", options=list(ASSETS.keys()), index=0)
     
-    # No caching needed. Data is fetched fresh every time.
     def fetch_asset_data(asset_key):
         cfg=ASSETS[asset_key]; intraday=get_intraday_data(cfg["ticker"]); macro=get_macro_data(); news=get_news_data(cfg["name"],cfg["news_queries"]); snapshot=build_swing_snapshot(cfg,macro,news); return snapshot,intraday,macro,news
 
@@ -1551,8 +1570,25 @@ def run_app():
                 for e in ev: txt += f"**{e['name']}**\n⏳ {e['countdown']}\n\n"
                 st.markdown(f"<div class='eco-card'><h4>🕒 Economic Countdown</h4>{txt}</div>", unsafe_allow_html=True)
             with c4:
-                spread=mt['yield_10y']-4.85; status="⚠️ Inverted (Recession Risk)" if spread<0 else "✅ Normal"
-                st.markdown(f"<div class='eco-card'><h4>Bond Yields</h4><b>10Y Yield:</b> {mt['yield_10y']:.2f}%<br><b>30Y Yield:</b> {mt['yield_30y']:.2f}%<br><b>10Y-2Y Curve:</b> {spread:.2f}%<br><small>{status}</small></div>", unsafe_allow_html=True)
+                spread_10_2 = mt['yield_10y'] - 4.85
+                status_10_2 = "⚠️ Inverted (Recession Risk)" if spread_10_2 < 0 else "✅ Normal"
+                
+                spread_30_10 = mt['yield_30y'] - mt['yield_10y']
+                status_30_10 = "⚠️ Inverted" if spread_30_10 < 0 else "✅ Normal"
+                
+                crisis_signal = "🔴 CRISIS" if mt['yield_30y'] > 5.0 else "🟢 Stable"
+                
+                st.markdown(f"""
+                <div class='eco-card'>
+                    <h4>Bond Yields</h4>
+                    <b>10Y Yield:</b> {mt['yield_10y']:.2f}%<br>
+                    <b>30Y Yield:</b> {mt['yield_30y']:.2f}%<br>
+                    <b>10Y-2Y Curve:</b> {spread_10_2:.2f}%<br>
+                    <small>{status_10_2}</small><br>
+                    <b>30Y-10Y Spread:</b> {spread_30_10:.2f}%<br>
+                    <small>{status_30_10} | {crisis_signal}</small>
+                </div>
+                """, unsafe_allow_html=True)
             st.markdown("---")
         except: pass
 
@@ -1562,17 +1598,16 @@ def run_app():
             mnq_pre=yf.Ticker("MNQ=F").history(period="1d",interval="5m"); 
             mgc_pre=yf.Ticker("MGC=F").history(period="1d",interval="5m"); 
             dxy=yf.Ticker("DX-Y.NYB").history(period="1d",interval="5m"); 
-            tnx=yf.Ticker("^TNX").history(period="1d",interval="5m")
+            tnx=yf.Ticker("^TNX").history(period="1d",interval="5m");
+            tyx=yf.Ticker("^TYX").history(period="1d",interval="5m")
             
             if not mnq_pre.empty and not mgc_pre.empty:
-                # 1. Get the real data
                 mnq_change=((mnq_pre['Close'].iloc[-1]-mnq_pre['Close'].iloc[0])/mnq_pre['Close'].iloc[0])*100
                 mgc_change=((mgc_pre['Close'].iloc[-1]-mgc_pre['Close'].iloc[0])/mgc_pre['Close'].iloc[0])*100
                 dxy_val=dxy['Close'].iloc[-1]
                 tnx_val=tnx['Close'].iloc[-1]
+                tyx_val=tyx['Close'].iloc[-1] if not tyx.empty else 4.50
                 
-                # 2. Calculate Macro Scores (0 to 10)
-                # Nasdaq loves: DXY < 103, Yields < 4.2. It hates: DXY > 105, Yields > 4.5
                 macro_score_nq = 0
                 if tnx_val < 4.2: macro_score_nq += 5
                 elif tnx_val < 4.3: macro_score_nq += 2
@@ -1582,16 +1617,24 @@ def run_app():
                 elif dxy_val < 104: macro_score_nq += 3
                 else: macro_score_nq -= 3
                 
-                # Gold hates yields > 4.3
+                if tyx_val - tnx_val > 0.5:
+                    macro_score_nq += 2
+                elif tyx_val - tnx_val < 0:
+                    macro_score_nq -= 3
+                
                 macro_score_gc = 0
                 if tnx_val > 4.3:
-                    macro_score_gc = -5  # Hard negative
+                    macro_score_gc = -5
                 elif tnx_val < 4.0:
                     macro_score_gc = 6
                 else:
                     macro_score_gc = 2
                 
-                # 3. Calculate the Confluence
+                if tyx_val > 5.0:
+                    macro_score_gc += 3
+                elif tyx_val < 4.0:
+                    macro_score_gc -= 2
+                
                 nq_action = "⚖️ CONFLICT: Sit Tight"
                 if macro_score_nq > 0 and mnq_change > 0.2:
                     nq_action = "✅ CONFLUENCE: Watch for Long entry"
@@ -1602,28 +1645,35 @@ def run_app():
                 if macro_score_gc > 0 and mgc_change > 0:
                     gc_action = "✅ CONFLUENCE: Watch for Long"
                 
-                # 4. Render the Cards
+                nq_bias = "Bullish" if macro_score_nq > 5 else "Bearish" if macro_score_nq < -2 else "Neutral"
+                gold_bias = "Bullish" if macro_score_gc > 4 else "Bearish" if macro_score_gc < -2 else "Neutral"
+                
                 sc1,sc2=st.columns(2)
                 with sc1: 
                     st.markdown(f"""
                     <div class='eco-card'>
-                        <h4>📈 NQ (Nasdaq)</h4>
-                        <b>Pre-Market:</b> {'🟢' if mnq_change>0 else '🔴'} {mnq_change:.2f}%<br>
-                        <b>DXY:</b> {dxy_val:.2f} | <b>Yields:</b> {tnx_val:.2f}%<br>
+                        <h4>📈 NQ (Nasdaq) Outlook</h4>
+                        <b>Pre-Market Change (MNQ):</b> {'🟢' if mnq_change>0 else '🔴'} {mnq_change:.2f}%<br>
+                        <b>DXY:</b> {dxy_val:.2f} | <b>10Y:</b> {tnx_val:.2f}% | <b>30Y:</b> {tyx_val:.2f}%<br>
                         <b>Macro Score:</b> {macro_score_nq}/10<br>
+                        <b>Directional Bias:</b> <span style='color: {"#4ade80" if "Bullish" in nq_bias else "#f87171" if "Bearish" in nq_bias else "#facc15"}; font-weight: bold;'>{nq_bias}</span><br>
                         <b>Decision:</b> <span style='color: {"#facc15" if "Sit" in nq_action else "#4ade80" if "Long" in nq_action else "#f87171"}; font-weight: bold;'>{nq_action}</span>
                     </div>
                     """, unsafe_allow_html=True)
                 with sc2: 
                     st.markdown(f"""
                     <div class='eco-card'>
-                        <h4>🥇 Gold (MGC)</h4>
-                        <b>Pre-Market:</b> {'🟢' if mgc_change>0 else '🔴'} {mgc_change:.2f}%<br>
-                        <b>Action:</b> <span style='color: {"#f87171" if tnx_val>4.3 else "#4ade80"}; font-weight: bold;'>{gc_action}</span>
+                        <h4>🥇 Gold (MGC) Outlook</h4>
+                        <b>Pre-Market Change (MGC):</b> {'🟢' if mgc_change>0 else '🔴'} {mgc_change:.2f}%<br>
+                        <b>10Y Yield:</b> {tnx_val:.2f}% | <b>30Y Yield:</b> {tyx_val:.2f}%<br>
+                        <b>Macro Score:</b> {macro_score_gc}/10<br>
+                        <b>Directional Bias:</b> <span style='color: {"#4ade80" if "Bullish" in gold_bias else "#f87171" if "Bearish" in gold_bias else "#facc15"}; font-weight: bold;'>{gold_bias}</span><br>
+                        <b>Decision:</b> <span style='color: {"#f87171" if tnx_val>4.3 else "#4ade80"}; font-weight: bold;'>{gc_action}</span>
                     </div>
                     """, unsafe_allow_html=True)
             else: st.info("Pre-market data loading... (Markets may be closed)")
-        except Exception: st.info("Overnight futures data unavailable at this time.")
+        except Exception as e: 
+            st.info(f"Overnight futures data unavailable at this time.")
 
     with main_tab2:
         if view_mode == "💵 DXY Dashboard":
@@ -1661,7 +1711,6 @@ def run_app():
             dxy = yf.Ticker("DX-Y.NYB").history(period="1d", interval="5m")
             tnx = yf.Ticker("^TNX").history(period="1d", interval="5m")
             
-            # 1. Handle missing data safely without crashing
             if nvda.empty: 
                 nvda_price = 0.0; nvda_200 = 0.0
             else: 
@@ -1681,54 +1730,44 @@ def run_app():
                 tnx_val = tnx['Close'].iloc[-1]
                 mnq_change = ((mnq['Close'].iloc[-1] - mnq['Close'].iloc[0]) / mnq['Close'].iloc[0]) * 100
 
-            # 2. Calculate Risk Score
             risk_score = 0
             warnings = []
             
-            # NVDA Status
             if nvda_price > 0 and nvda_200 > 0:
                 if nvda_price > nvda_200: risk_score += 0
                 elif nvda_price > nvda_200 * 0.95: risk_score += 15; warnings.append("⚠️ NVDA approaching 200-DMA")
                 else: risk_score += 30; warnings.append("🔴 NVDA BROKEN 200-DMA")
             
-            # SMH Status
             if smh_price > 0 and smh_200 > 0:
                 if smh_price > smh_200: risk_score += 0
                 elif smh_price > smh_200 * 0.95: risk_score += 15; warnings.append("⚠️ SMH approaching 200-DMA")
                 else: risk_score += 30; warnings.append("🔴 SMH BROKEN 200-DMA")
             
-            # Macro Pressure
             if dxy_val > 105 or tnx_val > 4.8: risk_score += 20; warnings.append("🔴 High Macro Pressure (DXY > 105 / Yields > 4.8%)")
             elif dxy_val > 103 or tnx_val > 4.5: risk_score += 10; warnings.append("⚠️ Moderate Macro Pressure")
             
-            # Pre-Market
             if mnq_change < -1.5: risk_score += 20; warnings.append("🔴 MNQ Pre-Market Down > 1.5%")
             elif mnq_change < -0.5: risk_score += 10; warnings.append("⚠️ MNQ Pre-Market Weak")
             
-            # 3. Render the Metrics with F-string formatting (handles 0.0)
             nvda_price_str = f"${nvda_price:.2f}" if nvda_price > 0 else "Loading..."
             nvda_200_str = f"${nvda_200:.2f}" if nvda_200 > 0 else "Loading..."
             
             smh_price_str = f"${smh_price:.2f}" if smh_price > 0 else "Loading..."
             smh_200_str = f"${smh_200:.2f}" if smh_200 > 0 else "Loading..."
             
-            # 4. Determine the Alert Color and Icon
             if risk_score >= 70: alert_color="#f87171"; alert_icon="🔴"; alert_text="HIGH RISK: AI BUBBLE ALERT"
             elif risk_score >= 40: alert_color="#facc15"; alert_icon="🟡"; alert_text="MODERATE RISK: Caution Advised"
             else: alert_color="#4ade80"; alert_icon="🟢"; alert_text="LOW RISK: All Clear"
             
-            # 5. Render the UI Cards
             col_b1, col_b2 = st.columns([1, 2])
             with col_b1: 
                 st.markdown(f"<div class='eco-card'><h3 style='color: {alert_color};'>{alert_icon} {alert_text}</h3><h1 style='color: {alert_color}; font-size: 48px;'>{risk_score}/100</h1><small>Risk Score</small></div>", unsafe_allow_html=True)
             with col_b2: 
                 st.markdown(f"<div class='eco-card'><h4>📊 Key Metrics</h4><b>NVDA:</b> {nvda_price_str} (200-DMA: {nvda_200_str})<br><b>SMH:</b> {smh_price_str} (200-DMA: {smh_200_str})<br><b>DXY:</b> {dxy_val:.2f} | <b>10Y Yield:</b> {tnx_val:.2f}%<br><b>MNQ Pre-Market:</b> {'🟢' if mnq_change>0 else '🔴'} {mnq_change:.2f}%</div>", unsafe_allow_html=True)
             
-            # 6. Render Warnings
             if warnings: st.warning("**⚠️ Bubble Watch Alerts:** " + " | ".join(warnings))
             
         except Exception as e:
-            # If ANYTHING goes wrong (API down), show this clean message instead of crashing
             st.warning(f"🤖 AI Bubble Watch is temporarily offline (Yahoo API delay). Data will load shortly.")
 
     with main_tab5:
