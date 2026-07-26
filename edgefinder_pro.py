@@ -683,7 +683,7 @@ def run_order_flow_scanner():
 # ============ STRATEGY CHEAT SHEET ============
 def run_cheat_sheet():
     st.subheader("📋 Strategy Entry Cheat Sheet")
-    st.caption("Quick reference guide for Long and Short entry requirements across all strategies.")
+    st.caption("Quick reference guide for Long and Short entry requirements across all strategies, plus the VIX Volatility Map.")
     
     st.markdown("### 📊 ICT Order Block Strategy")
     col_ict1, col_ict2 = st.columns(2)
@@ -795,6 +795,109 @@ def run_cheat_sheet():
             <b>Take Profit:</b> 2x Risk
         </div>
         """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    
+    # ============ VIX BENCHMARK SECTION ============
+    st.markdown("### 🌪️ VIX Volatility Map & Bias Benchmarks")
+    st.caption("Use the VIX to gauge market complacency, panic, and the probability of a reversal.")
+    
+    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
+    
+    with col_v1:
+        st.markdown("""
+        <div style='background-color: #163a1a; padding: 12px; border-radius: 8px; border: 1px solid #4ade80; text-align: center;'>
+            <h3 style='color: #4ade80; margin: 0;'>VIX < 15</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #4ade80;'>🟢 ZERO FEAR</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Extreme complacency.<br>Markets are too comfortable.<br><b>Action:</b> Look for small pullbacks. Longs are safe, but watch for sudden shocks.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_v2:
+        st.markdown("""
+        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
+            <h3 style='color: #60a5fa; margin: 0;'>15 < VIX < 20</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #60a5fa;'>⚖️ NORMAL</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Healthy market volatility.<br>This is the "Goldilocks" zone.<br><b>Action:</b> Trade your normal NQ/MGC setups. The system works best here.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_v3:
+        st.markdown("""
+        <div style='background-color: #3a2a1a; padding: 12px; border-radius: 8px; border: 1px solid #facc15; text-align: center;'>
+            <h3 style='color: #facc15; margin: 0;'>20 < VIX < 30</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #facc15;'>🟡 HIGH FEAR</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Panic is starting to creep in.<br>Expect wide swings (20+ points).<br><b>Action:</b> Tighten stops. Reversals are common.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_v4:
+        st.markdown("""
+        <div style='background-color: #3a1a1a; padding: 12px; border-radius: 8px; border: 1px solid #f87171; text-align: center;'>
+            <h3 style='color: #f87171; margin: 0;'>VIX > 30</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #f87171;'>🔴 EXTREME PANIC</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Market is bleeding. Fast money is bailing.<br><b>Action:</b> DO NOT short the lows. Watch for a "V-Bottom" reversal. Gold may act as a safe haven here.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    
+    # ============ BOND YIELD BENCHMARK SECTION ============
+    st.markdown("### 📉 Yield Curve Health & Bias Benchmarks")
+    st.caption("Use the Yield Curve to gauge recession risks, inflation, and the Fed's trajectory.")
+    
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    
+    with col_b1:
+        st.markdown("""
+        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
+            <h3 style='color: #60a5fa; margin: 0;'>US02Y < 4.0%</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #60a5fa;'>⚖️ ACCOMMODATIVE</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Short-term borrowing is cheap.<br>The Fed is cutting or paused.<br><b>Action:</b> Risk-on environment. Long NQ/MGC is favored.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_b2:
+        st.markdown("""
+        <div style='background-color: #3a2a1a; padding: 12px; border-radius: 8px; border: 1px solid #facc15; text-align: center;'>
+            <h3 style='color: #facc15; margin: 0;'>US02Y > 4.5%</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #facc15;'>🟡 TIGHTENING</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Short-term borrowing is expensive.<br>The Fed is hiking or hawkish.<br><b>Action:</b> Headwinds for NQ. Hold off on large longs.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_b3:
+        st.markdown("""
+        <div style='background-color: #1a3a2a; padding: 12px; border-radius: 8px; border: 1px solid #4ade80; text-align: center;'>
+            <h3 style='color: #4ade80; margin: 0;'>US10Y < 4.0%</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #4ade80;'>🟢 GROWTH TAILWIND</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Long-term borrowing is cheap.<br>Inflation is under control.<br><b>Action:</b> Bullish for NQ. MGC struggles unless yields drop fast.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_b4:
+        st.markdown("""
+        <div style='background-color: #3a1a1a; padding: 12px; border-radius: 8px; border: 1px solid #f87171; text-align: center;'>
+            <h3 style='color: #f87171; margin: 0;'>US10Y > 4.5%</h3>
+            <p style='font-size: 14px; margin-top: 5px;'><b style='color: #f87171;'>🔴 GROWTH HEADWIND</b></p>
+            <p style='font-size: 12px; color: #a0aec0;'>Long-term borrowing is expensive.<br>Inflation is sticky.<br><b>Action:</b> Bearish for NQ. <b>AVOID MGC</b> unless yields drop sharply.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    
+    st.markdown("#### 🔄 The 10Y-2Y Spread (Recession Warning)")
+    st.caption("When the 2-Year yield is HIGHER than the 10-Year yield, the yield curve is inverted—a historically reliable recession signal.")
+    st.markdown("""
+    <div style='background-color: #2a1a1a; padding: 15px; border-radius: 8px; border-left: 6px solid #f87171;'>
+        <h4 style='color: #f87171; margin: 0;'>⚠️ INVERTED CURVE ALERT</h4>
+        <p style='font-size: 14px; color: #e8ecf1; margin-top: 5px;'>
+            <b>US02Y > US10Y:</b> The bond market is screaming that a recession is coming within 12-18 months.<br>
+            <b>US02Y < US10Y:</b> The curve is normalizing. The economy is healthy.
+        </p>
+        <p style='font-size: 13px; color: #facc15;'><b>Action:</b> When the curve is inverted, expect violent whipsaws. Reduce position sizes significantly.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============ EXECUTION ENGINE: NY OPEN BREAKOUT SCANNER ============
 def run_level_marker():
@@ -1434,10 +1537,9 @@ def run_app():
     alert_price = st.sidebar.number_input("⚠️ Alert Price (Trigger)", value=0.0, step=1.0)
     alert_asset = st.sidebar.selectbox("Alert Asset", options=list(ASSETS.keys()), index=0)
     
-    # --- FIX: Removed @st.cache_data to ensure Pre-Market Scanner updates dynamically ---
+    # No caching needed. Data is fetched fresh every time.
     def fetch_asset_data(asset_key):
         cfg=ASSETS[asset_key]; intraday=get_intraday_data(cfg["ticker"]); macro=get_macro_data(); news=get_news_data(cfg["name"],cfg["news_queries"]); snapshot=build_swing_snapshot(cfg,macro,news); return snapshot,intraday,macro,news
-    if refresh: st.cache_data.clear()
 
     with main_tab1:
         try:
