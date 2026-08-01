@@ -34,7 +34,7 @@ ASSETS = {
 
     # --- INDICES ---
     "DXY": {"symbol":"DXY","name":"US Dollar Index","ticker":"DX-Y.NYB","tv_ticker":"TVC:DXY","news_queries":["DXY","dollar index"],"inverse_dxy":False,"safe_haven":False,"type":"Currency","favors":"High Yields"},
-    "VIX": {"symbol":"VIX","name":"Volatility Index","ticker":"^VIX","tv_ticker":"TVC:VIX","news_queries":["VIX","volatility"],"inverse_dxy":False,"safe_haven":False,"type":"Index","favors":"Panic"},
+    "VIX": {"symbol":"VIX","name":"CBOE Volatility Index","ticker":"^VIX","tv_ticker":"^VIX","news_queries":["VIX","volatility"],"inverse_dxy":False,"safe_haven":False,"type":"Index","favors":"Panic"},
     "N225": {"symbol":"N225","name":"Nikkei 225","ticker":"N225","tv_ticker":"N225","news_queries":["Nikkei","N225","japan"],"inverse_dxy":False,"safe_haven":False,"type":"Index","favors":"Asian Tech, Weak Yen"},
 
     # --- SOUTH KOREA ---
@@ -388,6 +388,7 @@ def render_dxy_dashboard():
   else: st.info("Yield data unavailable outside trading hours.")
  except: pass
 
+# ============ MERGED RENDER_ASSET FUNCTION ============
 def render_asset(asset_key, auto_save):
     cfg = ASSETS[asset_key]
     intraday = get_intraday_data(cfg["ticker"])
@@ -397,97 +398,126 @@ def render_asset(asset_key, auto_save):
     
     if auto_save: save_snapshot(snapshot)
     
-    st.subheader(f"{snapshot.name} ({snapshot.symbol})")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Swing Price", f"{snapshot.price:,.2f}")
-    c2.metric("Overall", f"{snapshot.overall_score}/10", snapshot.overall_bias.value)
-    c3.metric("Technical", f"{snapshot.technical_score}/10")
-    c4.metric("Macro / News", f"{snapshot.macro_score}/10 / {snapshot.news_score}/10")
-    
-    if "error" in intraday: 
-        st.warning(f"Intraday data unavailable: {intraday['error']}")
-    else:
-        st.info("📊 Intraday Setup: VWAP (Blue), 9-EMA (Orange), 20-EMA (Yellow), 50-EMA (Purple)")
-        c_i1, c_i2, c_i3, c_i4, c_i5 = st.columns(5)
-        c_i1.metric("Price", f"{intraday['current_price']:.2f}")
-        c_i2.metric("VWAP", f"{intraday['vwap']:.2f}")
-        c_i3.metric("9 EMA", f"{intraday['ema9']:.2f}")
-        c_i4.metric("20 EMA", f"{intraday['ema20']:.2f}")
-        c_i5.metric("50 EMA", f"{intraday['ema50']:.2f}")
+    # --- ECONOMIC DATA FETCH (CPI, NFP, UNEMPLOYMENT) ---
+    try:
+        cpi = yf.Ticker("^CPI").history(period="1mo") # US Inflation
+        cpi_val = cpi['Close'].iloc[-1] if not cpi.empty else 3.2
+        nfp = yf.Ticker("^NFP").history(period="1mo") # Non-Farm Payrolls
+        nfp_val = nfp['Close'].iloc[-1] if not nfp.empty else 150
+        unemp = yf.Ticker("UNRATE").history(period="1mo") # Unemployment
+        unemp_val = unemp['Close'].iloc[-1] if not unemp.empty else 4.0
+    except:
+        cpi_val, nfp_val, unemp_val = 3.2, 150, 4.0
         
-        finviz_ticker = cfg['ticker']
-        if finviz_ticker.endswith("=F"):
-            finviz_ticker = finviz_ticker.replace("=F", "")
-        elif finviz_ticker.startswith("^"):
-            finviz_ticker = finviz_ticker.replace("^", "")
+    # --- HEADER ---
+    st.markdown(f"""
+    <div style='display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2a2a; padding-bottom: 15px; margin-bottom: 20px;'>
+        <div>
+            <h2 style='margin: 0; color: #e8ecf1;'>{snapshot.name}</h2>
+            <span style='color: #a0aec0; font-size: 14px;'>{snapshot.symbol}</span>
+        </div>
+        <div>
+            <span style='background-color: {"#1a3a2a" if "Bullish" in snapshot.overall_bias.value else "#3a1a1a" if "Bearish" in snapshot.overall_bias.value else "#2a2a1a"}; color: {"#4ade80" if "Bullish" in snapshot.overall_bias.value else "#f87171" if "Bearish" in snapshot.overall_bias.value else "#facc15"}; padding: 5px 15px; border-radius: 20px; font-weight: bold; border: 1px solid {"#4ade80" if "Bullish" in snapshot.overall_bias.value else "#f87171" if "Bearish" in snapshot.overall_bias.value else "#facc15"};'>
+                {snapshot.overall_bias.value}
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # --- LAYOUT: TWO CLEAN COLUMNS ---
+    c1, c2 = st.columns([1, 2])
+    
+    # === COLUMN 1: MAIN SCORE & PRICE ===
+    with c1:
+        st.markdown("### 📊 Asset Scorecard")
+        st.metric("Price", f"${snapshot.price:,.2f}")
+        
+        # Determine Gauge Color
+        if snapshot.overall_score >= 7:
+            gauge_color = "#4ade80"  # Green
+            rot = -45
+        elif snapshot.overall_score >= 4:
+            gauge_color = "#facc15"  # Yellow
+            rot = 0
+        else:
+            gauge_color = "#f87171"  # Red
+            rot = 45
             
-        if cfg['symbol'] == "US10Y":
-            finviz_ticker = "US10Y"
-        elif cfg['symbol'] == "US30Y":
-            finviz_ticker = "US30Y"
-        elif cfg['symbol'] == "US02Y":
-            finviz_ticker = "US02Y"
-        elif cfg['symbol'] == "DXY":
-            finviz_ticker = "DXY"
+        # CSS Gauge (Speedometer)
+        st.markdown(f"""
+        <div style="display: flex; justify-content: center; align-items: center; flex-direction: column; margin: 20px 0;">
+            <div style="position: relative; width: 150px; height: 75px; overflow: hidden; border-radius: 150px 150px 0 0; border-bottom: 10px solid #2a2a2a;">
+                <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: conic-gradient(from 180deg, {gauge_color} 0%, {gauge_color} 50%, #2a2a2a 50%, #2a2a2a 100%); transform: rotate({rot}deg);"></div>
+                <div style="position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%); width: 90px; height: 45px; background-color: #0f1116; border-radius: 100px 100px 0 0; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 5px;">
+                    <h2 style="margin: 0; color: #e8ecf1; font-size: 28px; font-weight: bold;">{snapshot.overall_score}</h2>
+                </div>
+            </div>
+            <div style="width: 150px; display: flex; justify-content: space-between; color: #a0aec0; font-size: 12px; margin-top: 5px;">
+                <span>Bearish</span>
+                <span>Bullish</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("#### Breakdown")
+        c_s1, c_s2, c_s3 = st.columns(3)
+        c_s1.metric("Technical", f"{snapshot.technical_score}/10")
+        c_s2.metric("Macro", f"{snapshot.macro_score}/10")
+        c_s3.metric("News", f"{snapshot.news_score}/10")
+        
+        if "error" not in intraday:
+            st.markdown("---")
+            st.markdown("#### Intraday Setup")
+            c_i1, c_i2 = st.columns(2)
+            c_i1.metric("VWAP", f"{intraday['vwap']:.2f}")
+            c_i2.metric("9 EMA", f"{intraday['ema9']:.2f}")
 
-        st.components.v1.html(f"""
-        <iframe src="https://finviz.com/chart.ashx?t={finviz_ticker}&ty=c&ta=1&p=d&s=l" 
-                width="100%" height="500" frameborder="0" scrolling="no">
-        </iframe>
-        """, height=500)
+    # === COLUMN 2: DETAILED METRICS & DRIVERS ===
+    with c2:
+        st.markdown("### 🔍 Macro & Technical Drivers")
         
-    t1, t2, t3, t4 = st.tabs(["Technical Scores", "Macro Scores", "Historical Trend", "📊 Macro Drivers"])
-    
-    with t1:
-        df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 4), "Score": x.score, "Bias": x.bias.value} for x in snapshot.technical_details])
+        # Technicals Table
+        st.markdown("##### 📈 Technicals")
+        tech_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.technical_details])
+        st.dataframe(tech_df, width='stretch', hide_index=True, use_container_width=True)
         
-        # --- HARDENED FIX FOR EMPTY DATA CRASH ---
+        # Macro Table
+        st.markdown("##### 🌍 Macro")
+        macro_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.macro_details])
+        st.dataframe(macro_df, width='stretch', hide_index=True, use_container_width=True)
+        
+        # News Table
+        st.markdown("##### 📰 News Sentiment")
+        news_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.news_details])
+        st.dataframe(news_df, width='stretch', hide_index=True, use_container_width=True)
+
+        # Moving Averages (Vital filters)
         try:
             daily = yf.Ticker(cfg["ticker"]).history(period="6mo")
             if daily.empty:
-                # Fallback to 1 month if 6 months is empty
                 daily = yf.Ticker(cfg["ticker"]).history(period="1mo")
                 
-            if daily.empty:
-                # Absolute fallback values if Yahoo returns absolutely nothing
-                p = snapshot.price
-                m50 = p
-                m200 = p
-            else:
+            if not daily.empty:
                 closes = daily['Close'].tolist()
                 p = closes[-1]
                 m50 = sma(closes, 50)
                 m200 = sma(closes, 200)
-        except Exception:
-            # If anything fails, default to safe values so the app doesn't crash
-            p = snapshot.price
-            m50 = p
-            m200 = p
-        # --------------------------------------------------------
+                
+                st.markdown("##### 📉 Trend Filters")
+                col_ma1, col_ma2 = st.columns(2)
+                col_ma1.metric("50-Day SMA", f"${m50:.2f}", delta=f"{((p-m50)/m50)*100:.1f}%" if m50 else None)
+                col_ma2.metric("200-Day SMA", f"${m200:.2f}", delta=f"{((p-m200)/m200)*100:.1f}%" if m200 else None)
+        except:
+            pass
 
-        ldf = pd.DataFrame([
-            {"Indicator": "Daily 50 SMA", "Value": round(m50, 4), "Score": "-", "Bias": "Bullish" if p > m50 else "Bearish"},
-            {"Indicator": "Daily 200 SMA", "Value": round(m200, 4), "Score": "-", "Bias": "Bullish" if p > m200 else "Bearish"}
+        # --- US ECONOMIC DATA TABLE (Like the screenshot) ---
+        st.markdown("##### 🏛️ US Economic Data")
+        econ_df = pd.DataFrame([
+            {"Indicator": "Inflation (CPI MoM)", "Actual": f"{cpi_val:.2f}%", "Bias": "Bullish" if cpi_val < 3.0 else "Bearish"},
+            {"Indicator": "Non-Farm Payrolls", "Actual": f"{nfp_val:.0f}k", "Bias": "Bullish" if nfp_val > 120 else "Bearish"},
+            {"Indicator": "Unemployment Rate", "Actual": f"{unemp_val:.2f}%", "Bias": "Bearish" if unemp_val > 4.2 else "Bullish"}
         ])
-        st.dataframe(pd.concat([df, ldf]), width='stretch', hide_index=True)
-        
-    with t2:
-        st.dataframe(pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 4), "Score": x.score, "Bias": x.bias.value} for x in snapshot.macro_details]), width='stretch', hide_index=True)
-        
-    with t3:
-        recent = load_recent(snapshot.symbol)
-        if recent:
-            hist = pd.DataFrame(recent)
-            line = go.Figure()
-            line.add_scatter(x=hist["ts_utc"], y=hist["overall_score"], mode="lines+markers", name="Overall")
-            line.update_layout(height=200, paper_bgcolor="#0f1116", plot_bgcolor="#0f1116", font={"color": "#e8ecf1"})
-            st.plotly_chart(line, width='stretch')
-        else:
-            st.info("No history yet.")
-            
-    with t4:
-        drivers = get_macro_drivers(asset_key)
-        render_macro_drivers(drivers)
+        st.dataframe(econ_df, width='stretch', hide_index=True, use_container_width=True)
 
 def calc_rsi(closes)->float:
  if len(closes)<15: return 50.0
@@ -821,7 +851,8 @@ def run_cheat_sheet():
         
     with col_vxn2:
         st.markdown("""
-        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
+        <div style='background-color
+	        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
             <h3 style='color: #60a5fa; margin: 0;'>20 < VXN < 30</h3>
             <p style='font-size: 14px; margin-top: 5px;'><b style='color: #60a5fa;'>⚖️ NORMAL TECH VOL</b></p>
             <p style='font-size: 12px; color: #a0aec0;'>Healthy tech volatility.<br><b>Action:</b> Normal NQ setups apply here. Use your NY Sniper triggers.</p>
@@ -1004,8 +1035,9 @@ def run_level_marker():
         mnq_data = yf.Ticker("MNQ=F").history(period="2d", interval="1m")
         mgc_data = yf.Ticker("MGC=F").history(period="2d", interval="1m")
         sil_data = yf.Ticker("SIL=F").history(period="2d", interval="1m")
+        mes_data = yf.Ticker("MES=F").history(period="2d", interval="1m")
     
-    if mnq_data.empty or mgc_data.empty or sil_data.empty:
+    if mnq_data.empty or mgc_data.empty or sil_data.empty or mes_data.empty:
         st.warning("No session data available. Market may be closed.")
         return
     
@@ -1017,11 +1049,11 @@ def run_level_marker():
     tab_london, tab_ny, tab_yesterday = st.tabs(["🇬🇧 London Open Sniper", "🇺🇸 NY Open Sniper", "📅 Yesterday's Full Map"])
     
     # ============================================================
-    # TAB 1: LONDON OPEN SNIPER (MNQ, MGC & SIL)
+    # TAB 1: LONDON OPEN SNIPER (MNQ, MGC, SIL & MES)
     # ============================================================
     with tab_london:
         st.markdown("### 🇬🇧 London Open (2:00 AM EST) Sniper Sheet")
-        st.caption("London trades the breakout of the Asia Session High/Low. Use these exact numbers for MNQ, MGC, and SIL.")
+        st.caption("London trades the breakout of the Asia Session High/Low. Use these exact numbers for MNQ, MGC, SIL, and MES.")
         
         mnq_today = mnq_data[mnq_data.index.date == today]
         mnq_prev = mnq_data[mnq_data.index.date == (today - timedelta(days=1))]
@@ -1032,10 +1064,13 @@ def run_level_marker():
         sil_today = sil_data[sil_data.index.date == today]
         sil_prev = sil_data[sil_data.index.date == (today - timedelta(days=1))]
         
+        mes_today = mes_data[mes_data.index.date == today]
+        mes_prev = mes_data[mes_data.index.date == (today - timedelta(days=1))]
+        
         buffer = 15
         fakeout_buffer = 5
         
-        col_mnq_london, col_mgc_london, col_sil_london = st.columns(3)
+        col_mnq_london, col_mgc_london, col_sil_london, col_mes_london = st.columns(4)
         
         # ================= MNQ LONDON =================
         with col_mnq_london:
@@ -1203,11 +1238,65 @@ def run_level_marker():
             else:
                 st.info("No Asia data for SIL.")
 
+        # ================= MES LONDON =================
+        with col_mes_london:
+            st.markdown("#### 📈 MES London Triggers")
+            
+            asia_mes = mes_prev.between_time('17:00', '23:59')
+            if not asia_mes.empty:
+                asia_high = asia_mes['High'].max()
+                asia_low = asia_mes['Low'].min()
+                asia_range = asia_high - asia_low
+            else:
+                asia_high = asia_low = asia_range = 0
+            
+            current_price = 0
+            ny_mes = mes_today.between_time('08:00', '09:29')
+            if not ny_mes.empty:
+                current_price = ny_mes['Close'].iloc[-1]
+            
+            if asia_high > 0 and asia_low > 0:
+                if current_price > 0:
+                    if current_price > asia_low and current_price < asia_high:
+                        st.warning("⛔ **WAIT ZONE:** Price trapped inside Asia Range.")
+                    if asia_high - current_price < fakeout_buffer and asia_high - current_price > 0:
+                        st.error("⚠️ **FAKEOUT:** Near Asia High.")
+                    if current_price - asia_low < fakeout_buffer and current_price - asia_low > 0:
+                        st.error("⚠️ **FAKEOUT:** Near Asia Low.")
+                
+                london_long_entry = asia_high + buffer
+                london_long_sl = asia_high - 10
+                london_long_tp = london_long_entry + (asia_range * 1.5)
+                
+                london_short_entry = asia_low - buffer
+                london_short_sl = asia_low + 10
+                london_short_tp = london_short_entry - (asia_range * 1.5)
+                
+                st.markdown(f"""
+                <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                    <h4 style='color: #4ade80;'>🚀 LONG</h4>
+                    <b>Trigger:</b> > {london_long_entry}<br>
+                    <b>SL:</b> {london_long_sl}<br>
+                    <b>TP:</b> {london_long_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                    <h4 style='color: #f87171;'>📉 SHORT</h4>
+                    <b>Trigger:</b> < {london_short_entry}<br>
+                    <b>SL:</b> {london_short_sl}<br>
+                    <b>TP:</b> {london_short_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption(f"Asia Range: {asia_range:.2f} pts")
+            else:
+                st.info("No Asia data for MES.")
+
         st.markdown("---")
         st.info("💡 **London Strategy:** London tends to reverse the Asia move. If Asia went up, watch for London to fail at the Asia High and reverse.")
 
     # ============================================================
-    # TAB 2: NY OPEN SNIPER (MNQ, MGC & SIL)
+    # TAB 2: NY OPEN SNIPER (MNQ, MGC, SIL & MES)
     # ============================================================
     with tab_ny:
         st.markdown("### 🇺🇸 NY Open (9:30 AM EST) Sniper Sheet")
@@ -1222,10 +1311,13 @@ def run_level_marker():
         sil_today = sil_data[sil_data.index.date == today]
         sil_prev = sil_data[sil_data.index.date == (today - timedelta(days=1))]
         
+        mes_today = mes_data[mes_data.index.date == today]
+        mes_prev = mes_data[mes_data.index.date == (today - timedelta(days=1))]
+        
         buffer = 15
         fakeout_buffer = 5
         
-        col_mnq_ny, col_mgc_ny, col_sil_ny = st.columns(3)
+        col_mnq_ny, col_mgc_ny, col_sil_ny, col_mes_ny = st.columns(4)
         
         # ================= MNQ NY =================
         with col_mnq_ny:
@@ -1380,6 +1472,55 @@ def run_level_marker():
                 else:
                     st.info("No NY data for SIL.")
 
+        # ================= MES NY =================
+        with col_mes_ny:
+            st.markdown("#### 📈 MES NY Triggers")
+            
+            ny_mes = mes_today.between_time('08:00', '09:29')
+            if not ny_mes.empty:
+                ny_high = ny_mes['High'].max()
+                ny_low = ny_mes['Low'].min()
+                ny_range = ny_high - ny_low
+                current_price = ny_mes['Close'].iloc[-1]
+            else:
+                ny_high = ny_low = ny_range = current_price = 0
+            
+            if ny_high > 0 and ny_low > 0:
+                if current_price > ny_low and current_price < ny_high:
+                    st.warning("⛔ **WAIT ZONE:** Price trapped inside NY Range.")
+                if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY High.")
+                if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY Low.")
+                
+                ny_long_entry = ny_high + buffer
+                ny_long_sl = ny_high - 10
+                ny_long_tp = ny_long_entry + (ny_range * 1.5)
+                
+                ny_short_entry = ny_low - buffer
+                ny_short_sl = ny_low + 10
+                ny_short_tp = ny_short_entry - (ny_range * 1.5)
+                
+                st.markdown(f"""
+                <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                    <h4 style='color: #4ade80;'>🚀 LONG</h4>
+                    <b>Trigger:</b> > {ny_long_entry}<br>
+                    <b>SL:</b> {ny_long_sl}<br>
+                    <b>TP:</b> {ny_long_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                    <h4 style='color: #f87171;'>📉 SHORT</h4>
+                    <b>Trigger:</b> < {ny_short_entry}<br>
+                    <b>SL:</b> {ny_short_sl}<br>
+                    <b>TP:</b> {ny_short_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption(f"NY Range: {ny_range:.2f} pts")
+            else:
+                st.info("No NY data for MES.")
+
         st.markdown("---")
         st.info("💡 **NY Strategy:** The NY Pre-Market Range sets the battlefield for the first 30 minutes.")
 
@@ -1393,6 +1534,7 @@ def run_level_marker():
         mnq_prev = mnq_data[mnq_data.index.date == (today - timedelta(days=1))]
         mgc_prev = mgc_data[mgc_data.index.date == (today - timedelta(days=1))]
         sil_prev = sil_data[sil_data.index.date == (today - timedelta(days=1))]
+        mes_prev = mes_data[mes_data.index.date == (today - timedelta(days=1))]
 
         st.subheader("📈 MNQ (Micro Nasdaq) - Yesterday")
         if not mnq_prev.empty:
@@ -1523,6 +1665,50 @@ def run_level_marker():
             with c_n4: st.caption("Today's NY Sniper is built on this")
         else:
             st.info("No previous day data available for SIL.")
+            
+        st.markdown("---")
+
+        st.subheader("📈 MES (Micro S&P 500) - Yesterday")
+        if not mes_prev.empty:
+            # ASIA
+            asia_y_mes = mes_prev.between_time('17:00', '23:59')
+            if not asia_y_mes.empty:
+                asia_y_high = asia_y_mes['High'].max()
+                asia_y_low = asia_y_mes['Low'].min()
+                asia_y_range = asia_y_high - asia_y_low
+                asia_y_sell_zone = asia_y_high + (asia_y_range * 0.5)
+                asia_y_buy_zone = asia_y_low - (asia_y_range * 0.5)
+            else:
+                asia_y_high = asia_y_low = asia_y_sell_zone = asia_y_buy_zone = 0
+            
+            st.markdown("#### 🌏 Asia Session")
+            c_a1, c_a2, c_a3, c_a4 = st.columns(4)
+            with c_a1: st.metric("High", f"{asia_y_high:.2f}" if asia_y_high else "N/A")
+            with c_a2: st.metric("Low", f"{asia_y_low:.2f}" if asia_y_low else "N/A")
+            with c_a3: st.metric("Sell Zone", f"{asia_y_sell_zone:.2f}" if asia_y_sell_zone else "N/A")
+            with c_a4: st.metric("Buy Zone", f"{asia_y_buy_zone:.2f}" if asia_y_buy_zone else "N/A")
+
+            # LONDON
+            london_y_mes = mes_prev.between_time('02:00', '09:29')
+            st.markdown("---")
+            st.markdown("#### 🌍 London Session")
+            c_l1, c_l2, c_l3, c_l4 = st.columns(4)
+            with c_l1: st.metric("High", f"{london_y_mes['High'].max():.2f}" if not london_y_mes.empty else "N/A")
+            with c_l2: st.metric("Low", f"{london_y_mes['Low'].min():.2f}" if not london_y_mes.empty else "N/A")
+            with c_l3: st.metric("Range", f"{london_y_mes['High'].max() - london_y_mes['Low'].min():.2f}" if not london_y_mes.empty else "N/A")
+            with c_l4: st.caption("Use 50% extension of NY")
+            
+            # NY
+            ny_y_mes = mes_prev.between_time('08:00', '09:29')
+            st.markdown("---")
+            st.markdown("#### 🇺🇸 NY Pre-Market")
+            c_n1, c_n2, c_n3, c_n4 = st.columns(4)
+            with c_n1: st.metric("High", f"{ny_y_mes['High'].max():.2f}" if not ny_y_mes.empty else "N/A")
+            with c_n2: st.metric("Low", f"{ny_y_mes['Low'].min():.2f}" if not ny_y_mes.empty else "N/A")
+            with c_n3: st.metric("Range", f"{ny_y_mes['High'].max() - ny_y_mes['Low'].min():.2f}" if not ny_y_mes.empty else "N/A")
+            with c_n4: st.caption("Today's NY Sniper is built on this")
+        else:
+            st.info("No previous day data available for MES.")
             
         st.markdown("---")
         st.info("💡 **Veteran Tip:** Today's London Sniper trades off the *Asia Range*. Today's NY Sniper trades off the *NY Pre-Market Range*. Use the correct sniper for each session.")
