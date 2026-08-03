@@ -388,7 +388,7 @@ def render_dxy_dashboard():
   else: st.info("Yield data unavailable outside trading hours.")
  except: pass
 
-# ============ MERGED RENDER_ASSET FUNCTION ============
+# ============ RENDER_ASSET FUNCTION ============
 def render_asset(asset_key, auto_save):
     cfg = ASSETS[asset_key]
     intraday = get_intraday_data(cfg["ticker"])
@@ -510,7 +510,7 @@ def render_asset(asset_key, auto_save):
         except:
             pass
 
-        # --- US ECONOMIC DATA TABLE (Like the screenshot) ---
+        # --- US ECONOMIC DATA TABLE ---
         st.markdown("##### 🏛️ US Economic Data")
         econ_df = pd.DataFrame([
             {"Indicator": "Inflation (CPI MoM)", "Actual": f"{cpi_val:.2f}%", "Bias": "Bullish" if cpi_val < 3.0 else "Bearish"},
@@ -546,7 +546,7 @@ def save_snapshot(snapshot)->None:
 def load_recent(symbol,limit=30)->List[Dict]:
  conn=get_conn(); rows=conn.execute("SELECT ts_utc, symbol, price, overall_score FROM snapshots WHERE symbol = ? ORDER BY id DESC LIMIT ?",(symbol,limit)).fetchall(); conn.close(); return [dict(r) for r in rows][::-1]
 
-# ============ SAFE SWING SNAPSHOT (PREVENTS EMPTY DATA CRASH) ============
+# ============ SAFE SWING SNAPSHOT ============
 def build_swing_snapshot(config,macro,news)->AssetSnapshot:
     ticker=config["ticker"]
     
@@ -594,7 +594,7 @@ def build_swing_snapshot(config,macro,news)->AssetSnapshot:
 
     inv=config.get("inverse_dxy",False); safe=config.get("safe_haven",False); md=[IndicatorReading("DXY",macro["dxy"],score_dxy(macro["dxy"],inv),score_to_bias(score_dxy(macro["dxy"],inv))),IndicatorReading("VIX",macro["vix"],score_vix(macro["vix"],safe),score_to_bias(score_vix(macro["vix"],safe))),IndicatorReading("Real Yield",macro["real_yield_10y"],score_real_yield(macro["real_yield_10y"],inv),score_to_bias(score_real_yield(macro["real_yield_10y"],inv)))]; ms=sum([x.score for x in md])//3; ns=score_news(news.get("sentiment",0.0)); o=int(round(ts*0.45+ms*0.30+ns*0.25)); return AssetSnapshot(symbol=config["symbol"],name=config["name"],price=p,technical_score=ts,macro_score=ms,news_score=ns,overall_score=o,overall_bias=score_to_bias(o),technical_details=td,macro_details=md,news_details=[IndicatorReading("News Sentiment",news.get("sentiment",0),ns,score_to_bias(ns))])
 
-# ============ MONTHLY REGIME REPORT (From SQLite) ============
+# ============ MONTHLY REGIME REPORT ============
 def get_monthly_regime_report(asset_key):
     conn = get_conn()
     symbol = ASSETS[asset_key]["symbol"]
@@ -851,8 +851,7 @@ def run_cheat_sheet():
         
     with col_vxn2:
         st.markdown("""
-        <div style='background-color
-	        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
+        <div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; border: 1px solid #60a5fa; text-align: center;'>
             <h3 style='color: #60a5fa; margin: 0;'>20 < VXN < 30</h3>
             <p style='font-size: 14px; margin-top: 5px;'><b style='color: #60a5fa;'>⚖️ NORMAL TECH VOL</b></p>
             <p style='font-size: 12px; color: #a0aec0;'>Healthy tech volatility.<br><b>Action:</b> Normal NQ setups apply here. Use your NY Sniper triggers.</p>
@@ -1049,7 +1048,7 @@ def run_level_marker():
     tab_london, tab_ny, tab_yesterday = st.tabs(["🇬🇧 London Open Sniper", "🇺🇸 NY Open Sniper", "📅 Yesterday's Full Map"])
     
     # ============================================================
-    # TAB 1: LONDON OPEN SNIPER (MNQ, MGC, SIL & MES)
+    # TAB 1: LONDON OPEN SNIPER
     # ============================================================
     with tab_london:
         st.markdown("### 🇬🇧 London Open (2:00 AM EST) Sniper Sheet")
@@ -1296,7 +1295,7 @@ def run_level_marker():
         st.info("💡 **London Strategy:** London tends to reverse the Asia move. If Asia went up, watch for London to fail at the Asia High and reverse.")
 
     # ============================================================
-    # TAB 2: NY OPEN SNIPER (MNQ, MGC, SIL & MES)
+    # TAB 2: NY OPEN SNIPER
     # ============================================================
     with tab_ny:
         st.markdown("### 🇺🇸 NY Open (9:30 AM EST) Sniper Sheet")
@@ -1324,13 +1323,16 @@ def run_level_marker():
             st.markdown("#### 📈 MNQ NY Triggers")
             
             ny_mnq = mnq_today.between_time('08:00', '09:29')
+            
             if not ny_mnq.empty:
                 ny_high = ny_mnq['High'].max()
                 ny_low = ny_mnq['Low'].min()
                 ny_range = ny_high - ny_low
                 current_price = ny_mnq['Close'].iloc[-1]
+                st.success(f"✅ NY Pre-Market Range: {ny_high:.2f} - {ny_low:.2f} (Range: {ny_range:.2f} pts)")
             else:
                 ny_high = ny_low = ny_range = current_price = 0
+                st.info("⏳ NY Pre-Market (8:00-9:29 AM EST) data not yet available. Check back after 1:00 PM UK time.")
             
             if ny_high > 0 and ny_low > 0:
                 if current_price > ny_low and current_price < ny_high:
@@ -1365,125 +1367,126 @@ def run_level_marker():
                 </div>
                 """, unsafe_allow_html=True)
                 st.caption(f"NY Range: {ny_range:.2f} pts")
-            else:
-                st.info("No NY data for MNQ.")
 
         # ================= MGC NY =================
         with col_mgc_ny:
             st.markdown("#### 🥇 MGC NY Triggers")
             
+            ny_mgc = mgc_today.between_time('08:00', '09:29')
+            
+            if not ny_mgc.empty:
+                ny_high = ny_mgc['High'].max()
+                ny_low = ny_mgc['Low'].min()
+                ny_range = ny_high - ny_low
+                current_price = ny_mgc['Close'].iloc[-1]
+                st.success(f"✅ NY Pre-Market Range: {ny_high:.2f} - {ny_low:.2f} (Range: {ny_range:.2f} pts)")
+            else:
+                ny_high = ny_low = ny_range = current_price = 0
+                st.info("⏳ NY Pre-Market data not yet available.")
+            
             if tnx_val > 4.3:
                 st.error("⛔ **HARD STOP:** 10Y Yield > 4.3%. Avoid Gold.")
-            else:
-                ny_mgc = mgc_today.between_time('08:00', '09:29')
-                if not ny_mgc.empty:
-                    ny_high = ny_mgc['High'].max()
-                    ny_low = ny_mgc['Low'].min()
-                    ny_range = ny_high - ny_low
-                    current_price = ny_mgc['Close'].iloc[-1]
-                else:
-                    ny_high = ny_low = ny_range = current_price = 0
+            elif ny_high > 0 and ny_low > 0:
+                if current_price > ny_low and current_price < ny_high:
+                    st.warning("⛔ **WAIT ZONE:** Price trapped inside NY Range.")
+                if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY High.")
+                if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY Low.")
                 
-                if ny_high > 0 and ny_low > 0:
-                    if current_price > ny_low and current_price < ny_high:
-                        st.warning("⛔ **WAIT ZONE:** Price trapped inside NY Range.")
-                    if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
-                        st.error("⚠️ **FAKEOUT:** Near NY High.")
-                    if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
-                        st.error("⚠️ **FAKEOUT:** Near NY Low.")
-                    
-                    ny_long_entry = ny_high + buffer
-                    ny_long_sl = ny_high - 10
-                    ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                    
-                    ny_short_entry = ny_low - buffer
-                    ny_short_sl = ny_low + 10
-                    ny_short_tp = ny_short_entry - (ny_range * 1.5)
-                    
-                    st.markdown(f"""
-                    <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-                        <h4 style='color: #4ade80;'>🚀 LONG</h4>
-                        <b>Trigger:</b> > {ny_long_entry}<br>
-                        <b>SL:</b> {ny_long_sl}<br>
-                        <b>TP:</b> {ny_long_tp}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown(f"""
-                    <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-                        <h4 style='color: #f87171;'>📉 SHORT</h4>
-                        <b>Trigger:</b> < {ny_short_entry}<br>
-                        <b>SL:</b> {ny_short_sl}<br>
-                        <b>TP:</b> {ny_short_tp}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.caption(f"NY Range: {ny_range:.2f} pts")
-                else:
-                    st.info("No NY data for MGC.")
+                ny_long_entry = ny_high + buffer
+                ny_long_sl = ny_high - 10
+                ny_long_tp = ny_long_entry + (ny_range * 1.5)
+                
+                ny_short_entry = ny_low - buffer
+                ny_short_sl = ny_low + 10
+                ny_short_tp = ny_short_entry - (ny_range * 1.5)
+                
+                st.markdown(f"""
+                <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                    <h4 style='color: #4ade80;'>🚀 LONG</h4>
+                    <b>Trigger:</b> > {ny_long_entry}<br>
+                    <b>SL:</b> {ny_long_sl}<br>
+                    <b>TP:</b> {ny_long_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                    <h4 style='color: #f87171;'>📉 SHORT</h4>
+                    <b>Trigger:</b> < {ny_short_entry}<br>
+                    <b>SL:</b> {ny_short_sl}<br>
+                    <b>TP:</b> {ny_short_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption(f"NY Range: {ny_range:.2f} pts")
 
         # ================= SIL NY =================
         with col_sil_ny:
             st.markdown("#### 🥈 SIL NY Triggers")
             
+            ny_sil = sil_today.between_time('08:00', '09:29')
+            
+            if not ny_sil.empty:
+                ny_high = ny_sil['High'].max()
+                ny_low = ny_sil['Low'].min()
+                ny_range = ny_high - ny_low
+                current_price = ny_sil['Close'].iloc[-1]
+                st.success(f"✅ NY Pre-Market Range: {ny_high:.2f} - {ny_low:.2f}")
+            else:
+                ny_high = ny_low = ny_range = current_price = 0
+                st.info("⏳ NY Pre-Market data not yet available.")
+            
             if tnx_val > 4.3:
                 st.error("⛔ **HARD STOP:** 10Y Yield > 4.3%. Avoid Silver.")
-            else:
-                ny_sil = sil_today.between_time('08:00', '09:29')
-                if not ny_sil.empty:
-                    ny_high = ny_sil['High'].max()
-                    ny_low = ny_sil['Low'].min()
-                    ny_range = ny_high - ny_low
-                    current_price = ny_sil['Close'].iloc[-1]
-                else:
-                    ny_high = ny_low = ny_range = current_price = 0
+            elif ny_high > 0 and ny_low > 0:
+                if current_price > ny_low and current_price < ny_high:
+                    st.warning("⛔ **WAIT ZONE:** Price trapped inside NY Range.")
+                if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY High.")
+                if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
+                    st.error("⚠️ **FAKEOUT:** Near NY Low.")
                 
-                if ny_high > 0 and ny_low > 0:
-                    if current_price > ny_low and current_price < ny_high:
-                        st.warning("⛔ **WAIT ZONE:** Price trapped inside NY Range.")
-                    if ny_high - current_price < fakeout_buffer and ny_high - current_price > 0:
-                        st.error("⚠️ **FAKEOUT:** Near NY High.")
-                    if current_price - ny_low < fakeout_buffer and current_price - ny_low > 0:
-                        st.error("⚠️ **FAKEOUT:** Near NY Low.")
-                    
-                    ny_long_entry = ny_high + buffer
-                    ny_long_sl = ny_high - 10
-                    ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                    
-                    ny_short_entry = ny_low - buffer
-                    ny_short_sl = ny_low + 10
-                    ny_short_tp = ny_short_entry - (ny_range * 1.5)
-                    
-                    st.markdown(f"""
-                    <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-                        <h4 style='color: #4ade80;'>🚀 LONG</h4>
-                        <b>Trigger:</b> > {ny_long_entry}<br>
-                        <b>SL:</b> {ny_long_sl}<br>
-                        <b>TP:</b> {ny_long_tp}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown(f"""
-                    <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-                        <h4 style='color: #f87171;'>📉 SHORT</h4>
-                        <b>Trigger:</b> < {ny_short_entry}<br>
-                        <b>SL:</b> {ny_short_sl}<br>
-                        <b>TP:</b> {ny_short_tp}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.caption(f"NY Range: {ny_range:.2f} pts")
-                else:
-                    st.info("No NY data for SIL.")
+                ny_long_entry = ny_high + buffer
+                ny_long_sl = ny_high - 10
+                ny_long_tp = ny_long_entry + (ny_range * 1.5)
+                
+                ny_short_entry = ny_low - buffer
+                ny_short_sl = ny_low + 10
+                ny_short_tp = ny_short_entry - (ny_range * 1.5)
+                
+                st.markdown(f"""
+                <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                    <h4 style='color: #4ade80;'>🚀 LONG</h4>
+                    <b>Trigger:</b> > {ny_long_entry}<br>
+                    <b>SL:</b> {ny_long_sl}<br>
+                    <b>TP:</b> {ny_long_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                    <h4 style='color: #f87171;'>📉 SHORT</h4>
+                    <b>Trigger:</b> < {ny_short_entry}<br>
+                    <b>SL:</b> {ny_short_sl}<br>
+                    <b>TP:</b> {ny_short_tp}
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption(f"NY Range: {ny_range:.2f} pts")
 
         # ================= MES NY =================
         with col_mes_ny:
             st.markdown("#### 📈 MES NY Triggers")
             
             ny_mes = mes_today.between_time('08:00', '09:29')
+            
             if not ny_mes.empty:
                 ny_high = ny_mes['High'].max()
                 ny_low = ny_mes['Low'].min()
                 ny_range = ny_high - ny_low
                 current_price = ny_mes['Close'].iloc[-1]
+                st.success(f"✅ NY Pre-Market Range: {ny_high:.2f} - {ny_low:.2f}")
             else:
                 ny_high = ny_low = ny_range = current_price = 0
+                st.info("⏳ NY Pre-Market data not yet available.")
             
             if ny_high > 0 and ny_low > 0:
                 if current_price > ny_low and current_price < ny_high:
@@ -1518,8 +1521,6 @@ def run_level_marker():
                 </div>
                 """, unsafe_allow_html=True)
                 st.caption(f"NY Range: {ny_range:.2f} pts")
-            else:
-                st.info("No NY data for MES.")
 
         st.markdown("---")
         st.info("💡 **NY Strategy:** The NY Pre-Market Range sets the battlefield for the first 30 minutes.")
@@ -1538,7 +1539,6 @@ def run_level_marker():
 
         st.subheader("📈 MNQ (Micro Nasdaq) - Yesterday")
         if not mnq_prev.empty:
-            # ASIA
             asia_y_mnq = mnq_prev.between_time('17:00', '23:59')
             if not asia_y_mnq.empty:
                 asia_y_high = asia_y_mnq['High'].max()
@@ -1556,7 +1556,6 @@ def run_level_marker():
             with c_a3: st.metric("Sell Zone", f"{asia_y_sell_zone:.2f}" if asia_y_sell_zone else "N/A")
             with c_a4: st.metric("Buy Zone", f"{asia_y_buy_zone:.2f}" if asia_y_buy_zone else "N/A")
 
-            # LONDON
             london_y_mnq = mnq_prev.between_time('02:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🌍 London Session")
@@ -1566,7 +1565,6 @@ def run_level_marker():
             with c_l3: st.metric("Range", f"{london_y_mnq['High'].max() - london_y_mnq['Low'].min():.2f}" if not london_y_mnq.empty else "N/A")
             with c_l4: st.caption("Use 50% extension of NY")
             
-            # NY
             ny_y_mnq = mnq_prev.between_time('08:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🇺🇸 NY Pre-Market")
@@ -1582,7 +1580,6 @@ def run_level_marker():
         
         st.subheader("🥇 MGC (Micro Gold) - Yesterday")
         if not mgc_prev.empty:
-            # ASIA
             asia_y_mgc = mgc_prev.between_time('17:00', '23:59')
             if not asia_y_mgc.empty:
                 asia_y_high = asia_y_mgc['High'].max()
@@ -1600,7 +1597,6 @@ def run_level_marker():
             with c_a3: st.metric("Sell Zone", f"{asia_y_sell_zone:.2f}" if asia_y_sell_zone else "N/A")
             with c_a4: st.metric("Buy Zone", f"{asia_y_buy_zone:.2f}" if asia_y_buy_zone else "N/A")
 
-            # LONDON
             london_y_mgc = mgc_prev.between_time('02:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🌍 London Session")
@@ -1610,7 +1606,6 @@ def run_level_marker():
             with c_l3: st.metric("Range", f"{london_y_mgc['High'].max() - london_y_mgc['Low'].min():.2f}" if not london_y_mgc.empty else "N/A")
             with c_l4: st.caption("Use 50% extension of NY")
             
-            # NY
             ny_y_mgc = mgc_prev.between_time('08:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🇺🇸 NY Pre-Market")
@@ -1626,7 +1621,6 @@ def run_level_marker():
         
         st.subheader("🥈 SIL (Micro Silver) - Yesterday")
         if not sil_prev.empty:
-            # ASIA
             asia_y_sil = sil_prev.between_time('17:00', '23:59')
             if not asia_y_sil.empty:
                 asia_y_high = asia_y_sil['High'].max()
@@ -1644,7 +1638,6 @@ def run_level_marker():
             with c_a3: st.metric("Sell Zone", f"{asia_y_sell_zone:.2f}" if asia_y_sell_zone else "N/A")
             with c_a4: st.metric("Buy Zone", f"{asia_y_buy_zone:.2f}" if asia_y_buy_zone else "N/A")
 
-            # LONDON
             london_y_sil = sil_prev.between_time('02:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🌍 London Session")
@@ -1654,7 +1647,6 @@ def run_level_marker():
             with c_l3: st.metric("Range", f"{london_y_sil['High'].max() - london_y_sil['Low'].min():.2f}" if not london_y_sil.empty else "N/A")
             with c_l4: st.caption("Use 50% extension of NY")
             
-            # NY
             ny_y_sil = sil_prev.between_time('08:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🇺🇸 NY Pre-Market")
@@ -1670,7 +1662,6 @@ def run_level_marker():
 
         st.subheader("📈 MES (Micro S&P 500) - Yesterday")
         if not mes_prev.empty:
-            # ASIA
             asia_y_mes = mes_prev.between_time('17:00', '23:59')
             if not asia_y_mes.empty:
                 asia_y_high = asia_y_mes['High'].max()
@@ -1688,7 +1679,6 @@ def run_level_marker():
             with c_a3: st.metric("Sell Zone", f"{asia_y_sell_zone:.2f}" if asia_y_sell_zone else "N/A")
             with c_a4: st.metric("Buy Zone", f"{asia_y_buy_zone:.2f}" if asia_y_buy_zone else "N/A")
 
-            # LONDON
             london_y_mes = mes_prev.between_time('02:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🌍 London Session")
@@ -1698,7 +1688,6 @@ def run_level_marker():
             with c_l3: st.metric("Range", f"{london_y_mes['High'].max() - london_y_mes['Low'].min():.2f}" if not london_y_mes.empty else "N/A")
             with c_l4: st.caption("Use 50% extension of NY")
             
-            # NY
             ny_y_mes = mes_prev.between_time('08:00', '09:29')
             st.markdown("---")
             st.markdown("#### 🇺🇸 NY Pre-Market")
@@ -1713,52 +1702,106 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **Veteran Tip:** Today's London Sniper trades off the *Asia Range*. Today's NY Sniper trades off the *NY Pre-Market Range*. Use the correct sniper for each session.")
 
-# ============ ASIA SNIPER ENGINE (NIKKEI & KOSPI) ============
+# ============ ASIA SNIPER ENGINE (24/7 - FIXED WITH WORKING TICKERS) ============
 def run_asia_sniper():
     st.subheader("🌏 Asia Session Sniper Triggers")
-    st.caption("Sniper triggers for the Nikkei (N225) and KOSPI 200 Futures (QK1!). Based on 24h range and current price.")
+    st.caption("Sniper triggers for the Nikkei (N225) and KOSPI. Uses today's range if available, otherwise falls back to yesterday's range. Works 24/7.")
     
     with st.spinner("Fetching Asian market data..."):
-        # Fetch 2 days of 1-minute data for Asian indices
-        n225 = yf.Ticker("N225").history(period="2d", interval="1m")
-        qk1 = yf.Ticker("QK1!" if "QK1!" not in yf.Tickers("QK1!").tickers else "QK1=F").history(period="2d", interval="1m") # Fallback for futures
-        if qk1.empty: 
-            qk1 = yf.Ticker("QK1=F").history(period="2d", interval="1m")
+        # FIXED: Use tickers that actually work with Yahoo Finance
+        # Nikkei 225 - use EWJ (Japan ETF) as proxy since ^N225 doesn't work
+        n225 = yf.Ticker("EWJ").history(period="5d", interval="5m")
+        
+        # Also try Nikkei futures if available
+        nk_futures = yf.Ticker("NKD=F").history(period="5d", interval="5m")
+        if not nk_futures.empty:
+            n225 = nk_futures
+            st.info("📊 Using Nikkei Futures (NKD=F) for data")
+        elif not n225.empty:
+            st.info("📊 Using EWJ (Japan ETF) as proxy for Nikkei 225")
+        
+        # KOSPI - use the KOSPI Index ticker (^KS11 works!)
+        qk1 = yf.Ticker("^KS11").history(period="5d", interval="5m")
+        
+        # Also try Samsung as a proxy for KOSPI if needed
+        if qk1.empty:
+            samsung = yf.Ticker("005930.KS").history(period="5d", interval="5m")
+            if not samsung.empty:
+                qk1 = samsung
+                st.info("📊 Using Samsung (005930.KS) as proxy for KOSPI")
     
-    if n225.empty or qk1.empty:
-        st.warning("Asian market data unavailable. Markets may be closed.")
+    if n225.empty:
+        st.warning("Nikkei data unavailable. Please check your internet connection.")
+        return
+        
+    if qk1.empty:
+        st.warning("KOSPI data unavailable. Please check your internet connection.")
         return
     
     today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    
+    # If today is Monday, use Friday's data
+    if today.weekday() == 0:  # Monday
+        friday = today - timedelta(days=3)  # Friday
+        # Check if we have Friday data
+        if not n225[n225.index.date == friday].empty:
+            yesterday = friday
+            st.info("📅 Monday - Using Friday's data as yesterday's range")
+    
     buffer = 15
     fakeout_buffer = 5
+    
+    # Get current market status
+    now_utc = datetime.now(timezone.utc)
+    uk_time = now_utc.astimezone(timezone(timedelta(hours=1)))
+    current_hour = uk_time.hour
+    
+    # Asian markets open roughly 1:00 AM - 7:30 AM UK time
+    asian_market_open = 1 <= current_hour <= 7
     
     col_nikkei, col_kospi = st.columns(2)
     
     # ================= NIKKEI SNIPER =================
     with col_nikkei:
-        st.markdown("### 📈 Nikkei 225 (N225)")
+        st.markdown("### 📈 Nikkei 225 (Proxy)")
         
         n225_today = n225[n225.index.date == today]
-        n225_yesterday = n225[n225.index.date == (today - timedelta(days=1))]
+        n225_yesterday = n225[n225.index.date == yesterday]
         
-        # We use Yesterday's Close as the baseline for the current range
-        if not n225_yesterday.empty:
-            prev_close = n225_yesterday['Close'].iloc[-1]
-        else:
-            prev_close = 0
-            
-        if not n225_today.empty:
+        if not n225_today.empty and asian_market_open:
             day_high = n225_today['High'].max()
             day_low = n225_today['Low'].min()
             current_price = n225_today['Close'].iloc[-1]
             daily_range = day_high - day_low
+            prev_close = n225_yesterday['Close'].iloc[-1] if not n225_yesterday.empty else 0
+            data_source = "Today's Live Data"
+            st.success(f"✅ **Live Data** - Current: {current_price:.2f} | Range: {day_high:.2f} - {day_low:.2f}")
+            
+        elif not n225_yesterday.empty:
+            day_high = n225_yesterday['High'].max()
+            day_low = n225_yesterday['Low'].min()
+            daily_range = day_high - day_low
+            current_price = n225_yesterday['Close'].iloc[-1]
+            prev_close = current_price
+            data_source = "Yesterday's Range (Markets Closed)"
+            st.info(f"📅 **Using Yesterday's Range** - Close: {current_price:.2f} | Range: {day_high:.2f} - {day_low:.2f}")
+            st.caption("Asian markets are currently closed. Triggers based on yesterday's range for US session trading.")
         else:
-            day_high = day_low = current_price = daily_range = 0
+            day_high = day_low = daily_range = current_price = prev_close = 0
+            data_source = "No Data"
+            st.warning("No data available for Nikkei.")
         
-        if day_high > 0 and day_low > 0:
-            if current_price > day_low and current_price < day_high:
-                st.warning("⛔ **WAIT ZONE:** Price trapped inside today's range.")
+        if day_high > 0 and day_low > 0 and daily_range > 0:
+            st.caption(f"📊 Data Source: {data_source}")
+            
+            if current_price > 0:
+                if current_price > day_low and current_price < day_high:
+                    st.warning("⛔ **WAIT ZONE:** Price trapped inside the range.")
+                if day_high - current_price < fakeout_buffer and day_high - current_price > 0:
+                    st.error("⚠️ **FAKEOUT:** Near Range High.")
+                if current_price - day_low < fakeout_buffer and current_price - day_low > 0:
+                    st.error("⚠️ **FAKEOUT:** Near Range Low.")
             
             long_entry = day_high + buffer
             long_sl = day_high - 10
@@ -1767,6 +1810,9 @@ def run_asia_sniper():
             short_entry = day_low - buffer
             short_sl = day_low + 10
             short_tp = short_entry - (daily_range * 1.5)
+            
+            if not asian_market_open:
+                st.info("💡 **US Session Trading:** These levels are based on yesterday's Asian range. Use as support/resistance for US session breakouts.")
             
             st.markdown(f"""
             <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
@@ -1784,33 +1830,55 @@ def run_asia_sniper():
                 <b>TP:</b> {short_tp}
             </div>
             """, unsafe_allow_html=True)
-            st.caption(f"Daily Range: {daily_range:.2f} pts | Prev Close: {prev_close:.2f}")
+            
+            if not asian_market_open:
+                st.caption(f"📐 Range: {daily_range:.2f} pts | Yesterday's Close: {prev_close:.2f}")
+                st.caption("💡 These levels are valid for the entire US session until Asian markets reopen.")
+            else:
+                st.caption(f"📐 Daily Range: {daily_range:.2f} pts | Prev Close: {prev_close:.2f}")
         else:
-            st.info("No intraday data for Nikkei yet.")
+            st.info("No range data available. Check back when markets are open.")
 
     # ================= KOSPI SNIPER =================
     with col_kospi:
-        st.markdown("### 📉 KOSPI 200 Futures (QK1!)")
+        st.markdown("### 📉 KOSPI (^KS11)")
         
         qk1_today = qk1[qk1.index.date == today]
-        qk1_yesterday = qk1[qk1.index.date == (today - timedelta(days=1))]
+        qk1_yesterday = qk1[qk1.index.date == yesterday]
         
-        if not qk1_yesterday.empty:
-            prev_close = qk1_yesterday['Close'].iloc[-1]
-        else:
-            prev_close = 0
-            
-        if not qk1_today.empty:
+        if not qk1_today.empty and asian_market_open:
             day_high = qk1_today['High'].max()
             day_low = qk1_today['Low'].min()
             current_price = qk1_today['Close'].iloc[-1]
             daily_range = day_high - day_low
+            prev_close = qk1_yesterday['Close'].iloc[-1] if not qk1_yesterday.empty else 0
+            data_source = "Today's Live Data"
+            st.success(f"✅ **Live Data** - Current: {current_price:.2f} | Range: {day_high:.2f} - {day_low:.2f}")
+            
+        elif not qk1_yesterday.empty:
+            day_high = qk1_yesterday['High'].max()
+            day_low = qk1_yesterday['Low'].min()
+            daily_range = day_high - day_low
+            current_price = qk1_yesterday['Close'].iloc[-1]
+            prev_close = current_price
+            data_source = "Yesterday's Range (Markets Closed)"
+            st.info(f"📅 **Using Yesterday's Range** - Close: {current_price:.2f} | Range: {day_high:.2f} - {day_low:.2f}")
+            st.caption("Asian markets are currently closed. Triggers based on yesterday's range for US session trading.")
         else:
-            day_high = day_low = current_price = daily_range = 0
+            day_high = day_low = daily_range = current_price = prev_close = 0
+            data_source = "No Data"
+            st.warning("No data available for KOSPI.")
         
-        if day_high > 0 and day_low > 0:
-            if current_price > day_low and current_price < day_high:
-                st.warning("⛔ **WAIT ZONE:** Price trapped inside today's range.")
+        if day_high > 0 and day_low > 0 and daily_range > 0:
+            st.caption(f"📊 Data Source: {data_source}")
+            
+            if current_price > 0:
+                if current_price > day_low and current_price < day_high:
+                    st.warning("⛔ **WAIT ZONE:** Price trapped inside the range.")
+                if day_high - current_price < fakeout_buffer and day_high - current_price > 0:
+                    st.error("⚠️ **FAKEOUT:** Near Range High.")
+                if current_price - day_low < fakeout_buffer and current_price - day_low > 0:
+                    st.error("⚠️ **FAKEOUT:** Near Range Low.")
             
             long_entry = day_high + buffer
             long_sl = day_high - 10
@@ -1819,6 +1887,9 @@ def run_asia_sniper():
             short_entry = day_low - buffer
             short_sl = day_low + 10
             short_tp = short_entry - (daily_range * 1.5)
+            
+            if not asian_market_open:
+                st.info("💡 **US Session Trading:** These levels are based on yesterday's Asian range. Use as support/resistance for US session breakouts.")
             
             st.markdown(f"""
             <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
@@ -1836,9 +1907,24 @@ def run_asia_sniper():
                 <b>TP:</b> {short_tp}
             </div>
             """, unsafe_allow_html=True)
-            st.caption(f"Daily Range: {daily_range:.2f} pts | Prev Close: {prev_close:.2f}")
+            
+            if not asian_market_open:
+                st.caption(f"📐 Range: {daily_range:.2f} pts | Yesterday's Close: {prev_close:.2f}")
+                st.caption("💡 These levels are valid for the entire US session until Asian markets reopen.")
+            else:
+                st.caption(f"📐 Daily Range: {daily_range:.2f} pts | Prev Close: {prev_close:.2f}")
         else:
-            st.info("No intraday data for KOSPI Futures yet.")
+            st.info("No range data available. Check back when markets are open.")
+    
+    st.markdown("---")
+    st.info("""
+    💡 **US Session Trading Strategy:**
+    - When Asian markets are closed, the sniper uses **yesterday's Asian range**
+    - These levels act as **Support/Resistance** for the US session
+    - Look for breakouts above yesterday's High or below yesterday's Low
+    - The 15-point buffer helps filter out false breakouts
+    - These levels remain valid until Asian markets reopen the next day
+    """)
 
 # ============ CRT (CUMULATIVE RANGE THEORY) STRATEGY ============
 def run_crt_strategy():
@@ -2470,32 +2556,26 @@ def run_app():
                 tyx_val=tyx['Close'].iloc[-1] if not tyx.empty else 4.50
                 vxn_val=vxn['Close'].iloc[-1] if not vxn.empty else 20.0
                 
-                # --- MACRO SCORE FOR NQ (NASDAQ) ---
                 macro_score_nq = 0
                 
-                # Yield Check
                 if tnx_val < 4.2: macro_score_nq += 5
                 elif tnx_val < 4.3: macro_score_nq += 2
                 else: macro_score_nq -= 2
                 
-                # DXY Check
                 if dxy_val < 103: macro_score_nq += 5
                 elif dxy_val < 104: macro_score_nq += 3
                 else: macro_score_nq -= 3
                 
-                # 30Y-10Y Spread Check
                 if tyx_val - tnx_val > 0.5:
                     macro_score_nq += 2
                 elif tyx_val - tnx_val < 0:
                     macro_score_nq -= 3
                 
-                # ========== VXN CRITERION ==========
                 if vxn_val < 20: macro_score_nq += 3
                 elif vxn_val < 25: macro_score_nq += 0
                 elif vxn_val < 30: macro_score_nq -= 2
                 else: macro_score_nq -= 5
                 
-                # --- MACRO SCORE FOR GOLD (MGC) ---
                 macro_score_gc = 0
                 if tnx_val > 4.3:
                     macro_score_gc = -5
@@ -2509,7 +2589,6 @@ def run_app():
                 elif tyx_val < 4.0:
                     macro_score_gc -= 2
                 
-                # Calculate Confluence
                 nq_action = "⚖️ CONFLICT: Sit Tight"
                 if macro_score_nq > 0 and mnq_change > 0.2:
                     nq_action = "✅ CONFLUENCE: Watch for Long entry"
