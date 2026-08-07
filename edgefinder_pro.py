@@ -608,183 +608,6 @@ def get_monthly_regime_report(asset_key):
         return monthly
     return None
 
-# ============ MULTI-TIMEFRAME ORDER FLOW SCANNER ============
-def run_order_flow_scanner():
-    st.subheader("🌀 Multi-Timeframe Order Flow Scanner")
-    st.caption("Detects institutional Order Blocks and Liquidity Sweeps across 4H, 1H, and 15m timeframes for MNQ and MGC.")
-    
-    with st.spinner("Scanning multiple timeframes for Order Blocks and Liquidity Sweeps..."):
-        mnq_4h = yf.Ticker("MNQ=F").history(period="5d", interval="1h")  
-        mnq_1h = yf.Ticker("MNQ=F").history(period="5d", interval="1h")
-        mnq_15m = yf.Ticker("MNQ=F").history(period="2d", interval="15m")
-        
-        mgc_4h = yf.Ticker("MGC=F").history(period="5d", interval="1h")
-        mgc_1h = yf.Ticker("MGC=F").history(period="5d", interval="1h")
-        mgc_15m = yf.Ticker("MGC=F").history(period="2d", interval="15m")
-    
-    if mnq_4h.empty or mnq_1h.empty or mnq_15m.empty:
-        st.warning("No data available for one or more timeframes. Market may be closed.")
-        return
-    
-    def detect_order_blocks(data, timeframe_name):
-        ob = []
-        for i in range(1, len(data)-1):
-            candle = data.iloc[i]
-            body = abs(candle['Close'] - candle['Open'])
-            total_range = candle['High'] - candle['Low']
-            
-            if total_range == 0: continue
-            
-            if candle['Close'] > candle['Open'] and (body / total_range) > 0.60:
-                ob.append({
-                    'Timeframe': timeframe_name,
-                    'Time': data.index[i].strftime('%Y-%m-%d %H:%M'),
-                    'Type': 'Bullish OB',
-                    'Level': round(candle['Low'], 2),
-                    'Body%': f"{round((body/total_range)*100, 0)}%"
-                })
-            elif candle['Close'] < candle['Open'] and (body / total_range) > 0.60:
-                ob.append({
-                    'Timeframe': timeframe_name,
-                    'Time': data.index[i].strftime('%Y-%m-%d %H:%M'),
-                    'Type': 'Bearish OB',
-                    'Level': round(candle['High'], 2),
-                    'Body%': f"{round((body/total_range)*100, 0)}%"
-                })
-        return ob
-    
-    def detect_liquidity_sweeps(data, lookback=20, timeframe_name="15m"):
-        sweeps = []
-        high_20 = data['High'].rolling(lookback).max()
-        low_20 = data['Low'].rolling(lookback).min()
-        
-        for i in range(lookback, len(data)-1):
-            candle = data.iloc[i]
-            if candle['High'] > high_20.iloc[i-1] and candle['Close'] < candle['Open']:
-                sweeps.append({
-                    'Timeframe': timeframe_name,
-                    'Time': data.index[i].strftime('%Y-%m-%d %H:%M'),
-                    'Type': 'Bearish Sweep',
-                    'Sweep Level': round(candle['High'], 2),
-                    'Close': round(candle['Close'], 2)
-                })
-            elif candle['Low'] < low_20.iloc[i-1] and candle['Close'] > candle['Open']:
-                sweeps.append({
-                    'Timeframe': timeframe_name,
-                    'Time': data.index[i].strftime('%Y-%m-%d %H:%M'),
-                    'Type': 'Bullish Sweep',
-                    'Sweep Level': round(candle['Low'], 2),
-                    'Close': round(candle['Close'], 2)
-                })
-        return sweeps
-    
-    st.markdown("### 📈 MNQ (Micro Nasdaq) Multi-Timeframe Order Flow")
-    
-    ob_4h_mnq = detect_order_blocks(mnq_4h, "4H")
-    ob_1h_mnq = detect_order_blocks(mnq_1h, "1H")
-    ob_15m_mnq = detect_order_blocks(mnq_15m, "15m")
-    
-    sweeps_4h_mnq = detect_liquidity_sweeps(mnq_4h, 20, "4H")
-    sweeps_1h_mnq = detect_liquidity_sweeps(mnq_1h, 20, "1H")
-    sweeps_15m_mnq = detect_liquidity_sweeps(mnq_15m, 20, "15m")
-    
-    def clean_df_for_render(df):
-        if df.empty: return df
-        if 'Score' not in df.columns:
-            df['Score'] = 0
-        else:
-            df['Score'] = pd.to_numeric(df['Score'], errors='coerce').fillna(0).astype(int)
-        return df
-
-    col_ob1, col_ob2, col_ob3 = st.columns(3)
-    with col_ob1:
-        st.markdown("#### ⏳ 4H Order Blocks")
-        if ob_4h_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_4h_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 4H blocks yet.")
-    
-    with col_ob2:
-        st.markdown("#### ⏳ 1H Order Blocks")
-        if ob_1h_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_1h_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 1H blocks yet.")
-    
-    with col_ob3:
-        st.markdown("#### ⏳ 15m Order Blocks")
-        if ob_15m_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_15m_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 15m blocks yet.")
-    
-    st.markdown("---")
-    col_sw1, col_sw2, col_sw3 = st.columns(3)
-    with col_sw1:
-        st.markdown("#### 💨 4H Liquidity Sweeps")
-        if sweeps_4h_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_4h_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 4H sweeps yet.")
-    
-    with col_sw2:
-        st.markdown("#### 💨 1H Liquidity Sweeps")
-        if sweeps_1h_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_1h_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 1H sweeps yet.")
-    
-    with col_sw3:
-        st.markdown("#### 💨 15m Liquidity Sweeps")
-        if sweeps_15m_mnq:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_15m_mnq)), width='stretch', hide_index=True)
-        else: st.info("No 15m sweeps yet.")
-    
-    st.markdown("---")
-    st.markdown("🥇 MGC (Micro Gold) Multi-Timeframe Order Flow")
-    
-    ob_4h_mgc = detect_order_blocks(mgc_4h, "4H")
-    ob_1h_mgc = detect_order_blocks(mgc_1h, "1H")
-    ob_15m_mgc = detect_order_blocks(mgc_15m, "15m")
-    
-    sweeps_4h_mgc = detect_liquidity_sweeps(mgc_4h, 20, "4H")
-    sweeps_1h_mgc = detect_liquidity_sweeps(mgc_1h, 20, "1H")
-    sweeps_15m_mgc = detect_liquidity_sweeps(mgc_15m, 20, "15m")
-    
-    col_ob1, col_ob2, col_ob3 = st.columns(3)
-    with col_ob1:
-        st.markdown("#### ⏳ 4H Order Blocks")
-        if ob_4h_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_4h_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 4H blocks yet.")
-    
-    with col_ob2:
-        st.markdown("#### ⏳ 1H Order Blocks")
-        if ob_1h_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_1h_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 1H blocks yet.")
-    
-    with col_ob3:
-        st.markdown("#### ⏳ 15m Order Blocks")
-        if ob_15m_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(ob_15m_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 15m blocks yet.")
-    
-    st.markdown("---")
-    col_sw1, col_sw2, col_sw3 = st.columns(3)
-    with col_sw1:
-        st.markdown("#### 💨 4H Liquidity Sweeps")
-        if sweeps_4h_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_4h_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 4H sweeps yet.")
-    
-    with col_sw2:
-        st.markdown("#### 💨 1H Liquidity Sweeps")
-        if sweeps_1h_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_1h_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 1H sweeps yet.")
-    
-    with col_sw3:
-        st.markdown("#### 💨 15m Liquidity Sweeps")
-        if sweeps_15m_mgc:
-            st.dataframe(clean_df_for_render(pd.DataFrame(sweeps_15m_mgc)), width='stretch', hide_index=True)
-        else: st.info("No 15m sweeps yet.")
-
 # ============ STRATEGY CHEAT SHEET ============
 def run_cheat_sheet():
     st.subheader("📋 Macro & Volatility Cheat Sheet")
@@ -1025,6 +848,202 @@ def run_cheat_sheet():
 
     st.markdown("---")
     st.info("💡 **Global Macro Tip:** The US 10Y Yield (^TNX) is the 'risk-free baseline' for the world. If US yields rise, global yields (Japan, Korea) usually follow. When Japan and Korea yields spike, their stock markets (Nikkei, KOSPI) usually drop.")
+
+# ============ VWAP & 9 EMA STRATEGY CHEAT SHEET (NEW) ============
+def run_vwap_ema_strategy():
+    st.subheader("📊 VWAP & 9 EMA Strategy Cheat Sheet")
+    st.caption("Master the VWAP bounce strategy for MNQ, MGC, and MES during NY session (2:30 PM - 4:30 PM UK time).")
+    
+    # ============ BULLISH SETUP CONDITIONS ============
+    st.markdown("### 🟢 Bullish Setup Conditions")
+    st.markdown("""
+    <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80; margin-bottom: 15px;'>
+        <h4 style='color: #4ade80;'>✅ Required Conditions for LONG Setup</h4>
+        <ul style='color: #e8ecf1; font-size: 16px;'>
+            <li>✅ <b>Price ABOVE 9 EMA</b> - Short-term momentum is bullish</li>
+            <li>✅ <b>Price ABOVE VWAP</b> - Bullish trend is confirmed</li>
+            <li>✅ <b>Higher highs structure</b> - Price making higher highs and higher lows</li>
+            <li>✅ <b>MACRO: DXY weak, yields low</b> - Favorable macro environment</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ VWAP BOUNCE ENTRY ============
+    st.markdown("### 📈 VWAP Bounce Entry")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; border-left: 4px solid #facc15; margin-bottom: 15px;'>
+        <h4 style='color: #facc15;'>🎯 Entry Conditions</h4>
+        <ul style='color: #e8ecf1; font-size: 16px;'>
+            <li>✅ <b>Price pulls back to VWAP</b> - Normal retracement in an uptrend</li>
+            <li>✅ <b>Price bounces off VWAP</b> - Rejection of lower prices (bullish)</li>
+            <li>✅ <b>Bullish candle closes above VWAP</b> - Confirmation of bounce</li>
+            <li>✅ <b>Volume confirmation</b> - Volume increases on the bounce</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ ENTRY LEVELS TABLE ============
+    st.markdown("### 📊 Entry Levels")
+    
+    col_entry1, col_entry2, col_entry3, col_entry4 = st.columns(4)
+    
+    with col_entry1:
+        st.markdown("""
+        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #4ade80; height: 100%;'>
+            <h4 style='color: #4ade80; margin: 0;'>📌 Entry</h4>
+            <p style='font-size: 18px; font-weight: bold; color: #e8ecf1;'>On bounce off VWAP</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_entry2:
+        st.markdown("""
+        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #f87171; height: 100%;'>
+            <h4 style='color: #f87171; margin: 0;'>🛑 Stop Loss</h4>
+            <p style='font-size: 18px; font-weight: bold; color: #e8ecf1;'>Below VWAP (5-10 pts)</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_entry3:
+        st.markdown("""
+        <div style='background-color: #1a2a3a; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #60a5fa; height: 100%;'>
+            <h4 style='color: #60a5fa; margin: 0;'>🎯 Target 1</h4>
+            <p style='font-size: 18px; font-weight: bold; color: #e8ecf1;'>1.5x Range (50% profit)</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_entry4:
+        st.markdown("""
+        <div style='background-color: #1a2a3a; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #4ade80; height: 100%;'>
+            <h4 style='color: #4ade80; margin: 0;'>🎯 Target 2</h4>
+            <p style='font-size: 18px; font-weight: bold; color: #e8ecf1;'>2x Range (Full profit)</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ============ VISUAL CHART SETUP ============
+    st.markdown("### 📊 Visual Chart Setup")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
+        <h4 style='color: #e8ecf1;'>Chart: MNQ (5-min)</h4>
+        <ul style='color: #e8ecf1; font-size: 15px;'>
+            <li>🟣 <b>50 EMA</b> - Long-term trend</li>
+            <li>🟡 <b>20 EMA</b> - Medium-term trend</li>
+            <li>🟠 <b>9 EMA</b> ← <span style='color: #4ade80;'>Price ABOVE this (bullish)</span></li>
+            <li>🔵 <b>VWAP</b> ← <span style='color: #facc15;'>Price PULLS BACK to this</span></li>
+            <li>💰 <b>Price</b> ← <span style='color: #4ade80;'>BOUNCES OFF VWAP</span></li>
+        </ul>
+        <div style='background-color: #0f1116; padding: 10px; border-radius: 4px; text-align: center; margin-top: 10px;'>
+            <span style='color: #4ade80; font-size: 20px;'>⬆️ ENTRY on bounce</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ TRADING FLOW ============
+    st.markdown("### 🔄 Trading Strategy Flow")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
+        <h4 style='color: #e8ecf1;'>Normal Bullish Day:</h4>
+        <ol style='color: #e8ecf1; font-size: 15px;'>
+            <li><b>Price opens above VWAP</b> = Bullish bias</li>
+            <li><b>Price pulls back to VWAP</b> = Normal retracement</li>
+            <li><b>Price bounces off VWAP</b> = ✅ LONG ENTRY</li>
+            <li><b>Price continues higher</b> = ✅ PROFIT</li>
+        </ol>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ NY SNIPER INTEGRATION ============
+    st.markdown("### 🎯 How to Use with Your NY Sniper")
+    st.markdown("""
+    <div style='background-color: #1a2a3a; padding: 15px; border-radius: 8px; border-left: 4px solid #60a5fa; margin-bottom: 15px;'>
+        <ol style='color: #e8ecf1; font-size: 15px;'>
+            <li><b>NY Opens at 2:30 PM UK</b> - Start watching</li>
+            <li><b>Check if Price > VWAP</b> - Bullish confirmation</li>
+            <li><b>Watch for pullback to VWAP</b> - Wait for the bounce</li>
+            <li><b>If price bounces → ENTRY</b> - Execute the trade</li>
+            <li><b>If price breaks below VWAP → NO TRADE</b> - Trend is breaking down</li>
+        </ol>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ WHEN TO AVOID ============
+    st.markdown("### 🚨 When NOT to Take the Trade")
+    
+    col_avoid1, col_avoid2 = st.columns(2)
+    
+    with col_avoid1:
+        st.markdown("""
+        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border: 1px solid #f87171; height: 100%;'>
+            <h4 style='color: #f87171;'>❌ Skip These</h4>
+            <ul style='color: #e8ecf1;'>
+                <li>Price breaks BELOW VWAP - Trend breaking down</li>
+                <li>No bounce (price goes through VWAP) - No rejection</li>
+                <li>VIX > 30 - Too volatile</li>
+                <li>10Y Yield > 4.3% - Bad macro</li>
+                <li>No volume confirmation - Weak signal</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_avoid2:
+        st.markdown("""
+        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border: 1px solid #4ade80; height: 100%;'>
+            <h4 style='color: #4ade80;'>✅ Take These</h4>
+            <ul style='color: #e8ecf1;'>
+                <li>Strong bounce off VWAP</li>
+                <li>Bullish candle closes above VWAP</li>
+                <li>Volume increases on bounce</li>
+                <li>VIX < 25</li>
+                <li>10Y Yield < 4.3%</li>
+                <li>Macro alignment (weak DXY)</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ============ PRO TIPS ============
+    st.markdown("### 💡 Pro Tips")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
+        <ul style='color: #e8ecf1; font-size: 15px;'>
+            <li><b>Wait for the Candle Close</b> - Don't enter on the wick, wait for the candle to close above VWAP</li>
+            <li><b>Look for a Doji or Hammer</b> - These candlesticks at VWAP are strong rejection signals</li>
+            <li><b>Volume Confirmation</b> - More volume on the bounce = stronger signal</li>
+            <li><b>Multiple Timeframe</b> - Check 15-min chart also showing bullish structure</li>
+            <li><b>Macro Alignment</b> - Weak DXY, falling yields = better setup</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ QUICK REFERENCE CARD ============
+    st.markdown("### 📝 Quick Reference Card")
+    st.markdown("""
+    <div style='background-color: #0f1116; padding: 20px; border-radius: 8px; border: 2px solid #facc15;'>
+        <h3 style='color: #facc15; text-align: center;'>MNQ LONG ENTRY (VWAP Bounce)</h3>
+        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0;'>
+            <div style='background-color: #1a3a2a; padding: 10px; border-radius: 4px;'>
+                <span style='color: #4ade80;'>✅ Price > 9 EMA</span> (bullish)
+            </div>
+            <div style='background-color: #1a3a2a; padding: 10px; border-radius: 4px;'>
+                <span style='color: #4ade80;'>✅ Price touched VWAP</span> (pullback)
+            </div>
+            <div style='background-color: #1a3a2a; padding: 10px; border-radius: 4px;'>
+                <span style='color: #4ade80;'>✅ Price bounced</span> (rejection)
+            </div>
+            <div style='background-color: #1a3a2a; padding: 10px; border-radius: 4px;'>
+                <span style='color: #4ade80;'>✅ Bullish candle closed</span> (confirmation)
+            </div>
+        </div>
+        <div style='text-align: center; margin: 10px 0;'>
+            <span style='color: #4ade80; font-weight: bold;'>Enter: On bounce | Stop: Below VWAP | Target: 2x Range</span>
+        </div>
+        <div style='background-color: #3a1a1a; padding: 10px; border-radius: 4px;'>
+            <span style='color: #f87171;'>🔴 AVOID if:</span>
+            <span style='color: #e8ecf1;'> Price breaks below VWAP | No bounce | Macro bad (DXY strong, yields high)</span>
+        </div>
+        <div style='text-align: center; margin-top: 10px; color: #a0aec0; font-size: 14px;'>
+            ⏰ This strategy works best during NY session (2:30 PM - 4:30 PM UK time) when liquidity is highest!
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============ EXECUTION ENGINE: LONDON & NY OPEN SNIPERS ============
 def run_level_marker():
@@ -1702,7 +1721,7 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **Veteran Tip:** Today's London Sniper trades off the *Asia Range*. Today's NY Sniper trades off the *NY Pre-Market Range*. Use the correct sniper for each session.")
 
-# ============ NY AFTERNOON SNIPER (NEW) ============
+# ============ NY AFTERNOON SNIPER ============
 def run_ny_afternoon_sniper():
     """
     Late NY Session Sniper (3:30 PM - 4:30 PM UK Time)
@@ -2120,449 +2139,6 @@ def run_asia_sniper():
     - These levels remain valid until Asian markets reopen the next day
     """)
 
-# ============ CRT (CUMULATIVE RANGE THEORY) STRATEGY ============
-def run_crt_strategy():
-    st.subheader("📈 CRT Expansion Strategy Backtest")
-    st.caption("Uses Cumulative Range Theory (CRT) to calculate dynamic expansion targets above the Pre-Market High/Low. CRT Entry Rules listed below.")
-    
-    st.markdown("### 📈 CRT Expansion Strategy")
-    col_crt1, col_crt2 = st.columns(2)
-    with col_crt1:
-        st.markdown("""
-        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-            <h4 style='color: #4ade80;'>🟢 LONG ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Time: NY Open (9:30 AM)</li>
-                <li>✅ Price > VWAP</li>
-                <li>✅ Price > CRT Upper Expansion Target</li>
-                <li>✅ Pullback to 9 EMA</li>
-                <li>❌ No existing Long position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Below Pre-Market High<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    with col_crt2:
-        st.markdown("""
-        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-            <h4 style='color: #f87171;'>🔴 SHORT ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Time: NY Open (9:30 AM)</li>
-                <li>✅ Price < VWAP</li>
-                <li>✅ Price < CRT Lower Expansion Target</li>
-                <li>✅ Pullback to 9 EMA</li>
-                <li>❌ No existing Short position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Above Pre-Market Low<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    st.markdown("### 🎛️ Strategy Parameters")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    with col_p1:
-        ema_lookback = st.number_input("EMA Lookback (Bars)", min_value=5, max_value=20, value=9, step=1, key="crt_ema")
-        ny_open_hour = st.number_input("NY Open Hour (EST)", min_value=8, max_value=10, value=9, step=1, key="crt_hour")
-    with col_p2:
-        rr_ratio = st.number_input("Risk:Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5, key="crt_rr")
-        crt_multiplier = st.number_input("CRT Range Multiplier", min_value=0.5, max_value=3.0, value=1.5, step=0.5, key="crt_mult")
-    with col_p3:
-        pre_market_minutes = st.number_input("Pre-Market Lookback (Minutes)", min_value=10, max_value=60, value=30, step=5, key="crt_pre")
-    
-    run_btn = st.button("🚀 Run CRT Backtest", key="crt_btn")
-    
-    if not run_btn:
-        st.info("Adjust the parameters above and click 'Run CRT Backtest' to see results.")
-        return
-    
-    with st.spinner("Fetching MNQ historical data..."):
-        mnq = yf.Ticker("MNQ=F").history(period="6mo", interval="1h")
-        if mnq.empty:
-            st.warning("No data available. Market may be closed.")
-            return
-    
-    data = mnq.copy()
-    data.columns = [col.capitalize() for col in data.columns]
-    data = data.dropna()
-    
-    data['EMA'] = data['Close'].ewm(span=ema_lookback, adjust=False).mean()
-    data['VWAP'] = (data['Close'] * data['Volume']).cumsum() / data['Volume'].cumsum()
-    data['Date'] = data.index.date
-    data['Hour'] = data.index.hour
-    data['Minute'] = data.index.minute
-    data['Is_NY_Open'] = (data['Hour'] == ny_open_hour) & (data['Minute'] == 30)
-    
-    class CRTStrategy(Strategy):
-        def init(self):
-            super().init()
-            self.ema = self.data.EMA
-            self.vwap = self.data.VWAP
-            self.is_ny_open = self.data.Is_NY_Open
-        
-        def next(self):
-            super().next()
-            if len(self.data.Close) < 50: return
-            
-            current_close = self.data.Close[-1]
-            current_ema = self.ema[-1]
-            current_vwap = self.vwap[-1]
-            
-            recent_opens = self.is_ny_open[-5:].any()
-            if not recent_opens:
-                return
-                
-            today = self.data.index[-1].date()
-            today_data = self.data[self.data.index.date == today]
-            pre_market_data = today_data[today_data['Hour'] < ny_open_hour]
-            
-            if len(pre_market_data) < 3:
-                return
-                
-            pre_market_high = pre_market_data['High'].max()
-            pre_market_low = pre_market_data['Low'].min()
-            pre_market_range = pre_market_high - pre_market_low
-            
-            if pre_market_high is None or pre_market_low is None or pre_market_range == 0:
-                return
-            
-            upper_expansion = pre_market_high + (pre_market_range * crt_multiplier)
-            lower_expansion = pre_market_low - (pre_market_range * crt_multiplier)
-            
-            if (current_close > current_vwap and 
-                current_close > upper_expansion and
-                current_close < current_ema * 1.001 and
-                not self.position.is_long):
-                
-                stop_loss = pre_market_high - 5
-                risk = current_close - stop_loss
-                take_profit = current_close + (risk * rr_ratio)
-                self.buy(sl=stop_loss, tp=take_profit)
-            
-            elif (current_close < current_vwap and 
-                  current_close < lower_expansion and
-                  current_close > current_ema * 0.999 and
-                  not self.position.is_short):
-                
-                stop_loss = pre_market_low + 5
-                risk = stop_loss - current_close
-                take_profit = current_close - (risk * rr_ratio)
-                self.sell(sl=stop_loss, tp=take_profit)
-    
-    bt = Backtest(data, CRTStrategy, commission=0.0002, margin=1/50)
-    stats = bt.run()
-    st.markdown("---")
-    st.subheader("📈 MNQ CRT Strategy Results")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Return", f"{stats['Return [%]']:.2f}%")
-    c2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
-    c3.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
-    c4.metric("Total Trades", f"{stats['# Trades']}")
-    st.metric("Sharpe Ratio", f"{stats['Sharpe Ratio']:.2f}")
-    st.subheader("📊 Equity Curve")
-    st.components.v1.html(bt.plot()._repr_html_(), height=400, width='stretch')
-
-# ============ NY OPEN VWAP & EMA STRATEGY ============
-def run_ny_open_strategy():
-    st.subheader("📈 NY Open VWAP & 9 EMA Strategy Backtest")
-    st.caption("Trades the New York Open (9:30 AM) using VWAP, 9 EMA, and Pre-Market High/Low. Entry Rules listed below.")
-    
-    st.markdown("### 📈 NY Open VWAP & EMA Strategy")
-    col_ny1, col_ny2 = st.columns(2)
-    with col_ny1:
-        st.markdown("""
-        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-            <h4 style='color: #4ade80;'>🟢 LONG ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Time: NY Open (9:30 AM)</li>
-                <li>✅ Price > VWAP</li>
-                <li>✅ Pullback to 9 EMA</li>
-                <li>✅ Price > Pre-Market Low</li>
-                <li>❌ No existing Long position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Below Pre-Market Low<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    with col_ny2:
-        st.markdown("""
-        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-            <h4 style='color: #f87171;'>🔴 SHORT ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Time: NY Open (9:30 AM)</li>
-                <li>✅ Price < VWAP</li>
-                <li>✅ Pullback to 9 EMA</li>
-                <li>✅ Price < Pre-Market High</li>
-                <li>❌ No existing Short position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Above Pre-Market High<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    st.markdown("### 🎛️ Strategy Parameters")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    with col_p1:
-        ema_lookback = st.number_input("EMA Lookback (Bars)", min_value=5, max_value=20, value=9, step=1, key="ny_ema")
-        ny_open_hour = st.number_input("NY Open Hour (EST)", min_value=8, max_value=10, value=9, step=1, key="ny_hour")
-    with col_p2:
-        rr_ratio = st.number_input("Risk:Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5, key="ny_rr")
-        sl_buffer = st.number_input("Stop Loss Buffer (Points)", min_value=1, max_value=20, value=5, step=1, key="ny_sl")
-    with col_p3:
-        pre_market_minutes = st.number_input("Pre-Market Lookback (Minutes)", min_value=10, max_value=60, value=30, step=5, key="ny_pre")
-    
-    run_btn = st.button("🚀 Run NY Open Backtest", key="ny_btn")
-    
-    if not run_btn:
-        st.info("Adjust the parameters above and click 'Run NY Open Backtest' to see results.")
-        return
-    
-    with st.spinner("Fetching MNQ historical data..."):
-        mnq = yf.Ticker("MNQ=F").history(period="6mo", interval="1h")
-        if mnq.empty:
-            st.warning("No data available. Market may be closed.")
-            return
-    
-    data = mnq.copy()
-    data.columns = [col.capitalize() for col in data.columns]
-    data = data.dropna()
-    
-    data['EMA'] = data['Close'].ewm(span=ema_lookback, adjust=False).mean()
-    data['VWAP'] = (data['Close'] * data['Volume']).cumsum() / data['Volume'].cumsum()
-    data['Date'] = data.index.date
-    data['Hour'] = data.index.hour
-    data['Minute'] = data.index.minute
-    data['Is_NY_Open'] = (data['Hour'] == ny_open_hour) & (data['Minute'] == 30)
-    
-    class NYOpenStrategy(Strategy):
-        def init(self):
-            super().init()
-            self.ema = self.data.EMA
-            self.vwap = self.data.VWAP
-            self.is_ny_open = self.data.Is_NY_Open
-        
-        def next(self):
-            super().next()
-            if len(self.data.Close) < 50: return
-            
-            current_close = self.data.Close[-1]
-            current_ema = self.ema[-1]
-            current_vwap = self.vwap[-1]
-            recent_opens = self.is_ny_open[-5:].any()
-            if not recent_opens:
-                return
-                
-            today = self.data.index[-1].date()
-            today_data = self.data[self.data.index.date == today]
-            pre_market_data = today_data[today_data['Hour'] < ny_open_hour]
-            if len(pre_market_data) < 3:
-                return
-                
-            pre_market_high = pre_market_data['High'].max()
-            pre_market_low = pre_market_data['Low'].min()
-            if pre_market_high is None or pre_market_low is None:
-                return
-            
-            if (current_close > current_vwap and 
-                current_close < current_ema * 1.001 and 
-                current_close > pre_market_low and
-                not self.position.is_long):
-                stop_loss = pre_market_low - sl_buffer
-                risk = current_close - stop_loss
-                take_profit = current_close + (risk * rr_ratio)
-                self.buy(sl=stop_loss, tp=take_profit)
-            
-            elif (current_close < current_vwap and 
-                  current_close > current_ema * 0.999 and 
-                  current_close < pre_market_high and
-                  not self.position.is_short):
-                stop_loss = pre_market_high + sl_buffer
-                risk = stop_loss - current_close
-                take_profit = current_close - (risk * rr_ratio)
-                self.sell(sl=stop_loss, tp=take_profit)
-    
-    bt = Backtest(data, NYOpenStrategy, commission=0.0002, margin=1/50)
-    stats = bt.run()
-    st.markdown("---")
-    st.subheader("📈 MNQ NY Open Strategy Results")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Return", f"{stats['Return [%]']:.2f}%")
-    c2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
-    c3.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
-    c4.metric("Total Trades", f"{stats['# Trades']}")
-    st.metric("Sharpe Ratio", f"{stats['Sharpe Ratio']:.2f}")
-    st.subheader("📊 Equity Curve")
-    st.components.v1.html(bt.plot()._repr_html_(), height=400, width='stretch')
-
-# ============ ICT STRATEGY BACKTEST ENGINE ============
-def run_ict_backtest():
-    st.subheader("📊 Interactive ICT Order Block Strategy Backtest")
-    st.caption("Tune the strategy parameters on the fly and instantly see the 6-month performance for MNQ and MGC. ICT Entry Rules listed below.")
-    
-    st.markdown("### 📊 ICT Order Block Strategy")
-    col_ict1, col_ict2 = st.columns(2)
-    with col_ict1:
-        st.markdown("""
-        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-            <h4 style='color: #4ade80;'>🟢 LONG ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Higher High structure</li>
-                <li>✅ Price > 200 EMA (Trend Filter)</li>
-                <li>✅ RSI < 30 (Oversold)</li>
-                <li>✅ Close > Previous Close (Momentum)</li>
-                <li>✅ Price > Order Block</li>
-                <li>❌ No existing Long position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Below Order Block<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    with col_ict2:
-        st.markdown("""
-        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-            <h4 style='color: #f87171;'>🔴 SHORT ENTRY</h4>
-            <ul style='color: #e8ecf1;'>
-                <li>✅ Lower Low structure</li>
-                <li>✅ Price < 200 EMA (Trend Filter)</li>
-                <li>✅ RSI > 70 (Overbought)</li>
-                <li>✅ Close < Previous Close (Momentum)</li>
-                <li>✅ Price < Order Block</li>
-                <li>❌ No existing Short position</li>
-            </ul>
-            <br>
-            <b>Stop Loss:</b> Above Order Block<br>
-            <b>Take Profit:</b> 2x Risk
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    st.markdown("### 🎛️ Strategy Parameters")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    with col_p1:
-        liquidity_lookback = st.number_input("Liquidity Lookback (Bars)", min_value=10, max_value=100, value=50, step=5, key="ict_lookback")
-    with col_p2:
-        rsi_oversold = st.number_input("RSI Oversold (Long)", min_value=10, max_value=50, value=30, step=5, key="ict_rsi_low")
-        rsi_overbought = st.number_input("RSI Overbought (Short)", min_value=50, max_value=90, value=70, step=5, key="ict_rsi_high")
-    with col_p3:
-        rr_ratio = st.number_input("Risk:Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5, key="ict_rr")
-        sl_buffer = st.number_input("Stop Loss Buffer (Points)", min_value=1, max_value=20, value=5, step=1, key="ict_sl")
-    
-    run_btn = st.button("🚀 Run ICT Backtest", key="ict_btn")
-    
-    if not run_btn:
-        st.info("Adjust the parameters above and click 'Run Backtest' to see results.")
-        return
-    
-    with st.spinner("Fetching MNQ and MGC historical data..."):
-        mnq = yf.Ticker("MNQ=F").history(period="6mo", interval="1h")
-        mgc = yf.Ticker("MGC=F").history(period="6mo", interval="1h")
-        if mnq.empty or mgc.empty:
-            st.warning("No data available. Market may be closed.")
-            return
-    
-    def run_backtest_on_asset(data, asset_name, lookback, rsi_low, rsi_high, rr, buffer):
-        data = data.copy()
-        data.columns = [col.capitalize() for col in data.columns]
-        
-        data['High_L'] = data['High'].rolling(lookback).max()
-        data['Low_L'] = data['Low'].rolling(lookback).min()
-        data['EMA_200'] = data['Close'].ewm(span=200, adjust=False).mean()
-        
-        delta = data['Close'].diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss
-        data['RSI'] = 100 - (100 / (1 + rs))
-        
-        data['Order_Block'] = np.nan
-        bull_cond = (data['Close'] > data['Open']) & (data['Close'] - data['Open'] > 0.75 * (data['High'] - data['Low']))
-        data.loc[bull_cond, 'Order_Block'] = data.loc[bull_cond, 'Low']
-        bear_cond = (data['Close'] < data['Open']) & (data['Open'] - data['Close'] > 0.75 * (data['High'] - data['Low']))
-        data.loc[bear_cond, 'Order_Block'] = data.loc[bear_cond, 'High']
-        
-        data = data.dropna()
-        
-        class InteractiveICTStrategy(Strategy):
-            def init(self):
-                super().init()
-                self.highs = self.data.High_L
-                self.lows = self.data.Low_L
-                self.ema_200 = self.data.EMA_200
-                self.rsi = self.data.RSI
-                self.order_blocks = self.data.Order_Block
-            
-            def next(self):
-                super().next()
-                if len(self.data.Close) < lookback: return
-                    
-                current_high = self.data.High[-1]
-                current_low = self.data.Low[-1]
-                current_close = self.data.Close[-1]
-                prev_close = self.data.Close[-2]
-                current_rsi = self.rsi[-1]
-                ema_200 = self.ema_200[-1]
-                ob = self.order_blocks[-1]
-                
-                higher_high = current_high > self.highs[-2]
-                lower_low = current_low < self.lows[-2]
-                
-                if (higher_high and not lower_low and current_close > ema_200 and
-                    current_rsi < rsi_low and current_close > prev_close and
-                    not np.isnan(ob) and ob < current_close and
-                    not self.position.is_long):
-                    
-                    stop_loss = ob - buffer
-                    risk = current_close - stop_loss
-                    take_profit = current_close + (risk * rr)
-                    self.buy(sl=stop_loss, tp=take_profit)
-                
-                elif (lower_low and not higher_high and current_close < ema_200 and
-                      current_rsi > rsi_high and current_close < prev_close and
-                      not np.isnan(ob) and ob > current_close and
-                      not self.position.is_short):
-                    
-                    stop_loss = ob + buffer
-                    risk = stop_loss - current_close
-                    take_profit = current_close - (risk * rr)
-                    self.sell(sl=stop_loss, tp=take_profit)
-        
-        bt = Backtest(data, InteractiveICTStrategy, commission=0.0002, margin=1/50)
-        stats = bt.run()
-        return stats, bt
-    
-    st.markdown("---")
-    st.subheader("📈 MNQ Micro Nasdaq - ICT Results")
-    stats_mnq, bt_mnq = run_backtest_on_asset(mnq, "MNQ", liquidity_lookback, rsi_oversold, rsi_overbought, rr_ratio, sl_buffer)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Return", f"{stats_mnq['Return [%]']:.2f}%")
-    c2.metric("Win Rate", f"{stats_mnq['Win Rate [%]']:.2f}%")
-    c3.metric("Max Drawdown", f"{stats_mnq['Max. Drawdown [%]']:.2f}%")
-    c4.metric("Total Trades", f"{stats_mnq['# Trades']}")
-    st.metric("Sharpe Ratio", f"{stats_mnq['Sharpe Ratio']:.2f}")
-    st.subheader("📊 MNQ Equity Curve")
-    st.components.v1.html(bt_mnq.plot()._repr_html_(), height=400, width='stretch')
-    
-    st.markdown("---")
-    st.subheader("🥇 MGC Micro Gold - ICT Results")
-    stats_mgc, bt_mgc = run_backtest_on_asset(mgc, "MGC", liquidity_lookback, rsi_oversold, rsi_overbought, rr_ratio, sl_buffer)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Return", f"{stats_mgc['Return [%]']:.2f}%")
-    c2.metric("Win Rate", f"{stats_mgc['Win Rate [%]']:.2f}%")
-    c3.metric("Max Drawdown", f"{stats_mgc['Max. Drawdown [%]']:.2f}%")
-    c4.metric("Total Trades", f"{stats_mgc['# Trades']}")
-    st.metric("Sharpe Ratio", f"{stats_mgc['Sharpe Ratio']:.2f}")
-    st.subheader("📊 MGC Equity Curve")
-    st.components.v1.html(bt_mgc.plot()._repr_html_(), height=400, width='stretch')
-
 # ============ TRADING JOURNAL ============
 DB_JOURNAL_PATH = Path("trading_journal.db")
 
@@ -2674,21 +2250,19 @@ def run_app():
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12, main_tab13, main_tab14 = st.tabs([
+    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
         "📅 Regime Report", 
         "🤖 AI Bubble Watch", 
         "💵 DXY Dashboard",
         "📊 ICT Backtest",
-        "📈 NY Open Strategy",
-        "📈 CRT Strategy",
         "📋 Cheat Sheet",
         "🎯 Market Levels",
-        "🌀 Order Flow",
         "📝 Journal",
         "🌏 Asia Sniper",
-        "🇺🇸 NY Afternoon"  # NEW TAB
+        "🇺🇸 NY Afternoon",
+        "📈 VWAP & 9 EMA Strategy"  # NEW TAB
     ])
     
     view_mode = st.sidebar.radio("View Mode", ["📈 Individual Assets", "💵 DXY Dashboard"])
@@ -2927,28 +2501,22 @@ def run_app():
         run_ict_backtest()
 
     with main_tab7:
-        run_ny_open_strategy()
-
-    with main_tab8:
-        run_crt_strategy()
-
-    with main_tab9:
         run_cheat_sheet()
 
-    with main_tab10:
+    with main_tab8:
         run_level_marker()
 
-    with main_tab11:
-        run_order_flow_scanner()
-
-    with main_tab12:
+    with main_tab9:
         run_journal_tab()
 
-    with main_tab13:
+    with main_tab10:
         run_asia_sniper()
 
-    with main_tab14:
+    with main_tab11:
         run_ny_afternoon_sniper()
+
+    with main_tab12:
+        run_vwap_ema_strategy()
 
 if __name__ == "__main__":
     run_app()
