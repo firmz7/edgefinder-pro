@@ -611,7 +611,7 @@ def get_monthly_regime_report(asset_key):
 # ============ STRATEGY CHEAT SHEET ============
 def run_cheat_sheet():
     st.subheader("📋 Macro & Volatility Cheat Sheet")
-    st.caption("Reference guides for VIX, VXN, and Bond Yields. Strategy entry rules are now located in their respective Backtest tabs.")
+    st.caption("Reference guides for VIX, VXN, and Bond Yields.")
     
     # ============ VIX BENCHMARK SECTION ============
     st.markdown("### 🌪️ VIX (S&P 500) Volatility Map & Bias Benchmarks")
@@ -849,7 +849,7 @@ def run_cheat_sheet():
     st.markdown("---")
     st.info("💡 **Global Macro Tip:** The US 10Y Yield (^TNX) is the 'risk-free baseline' for the world. If US yields rise, global yields (Japan, Korea) usually follow. When Japan and Korea yields spike, their stock markets (Nikkei, KOSPI) usually drop.")
 
-# ============ VWAP & 9 EMA STRATEGY CHEAT SHEET (NEW) ============
+# ============ VWAP & 9 EMA STRATEGY CHEAT SHEET ============
 def run_vwap_ema_strategy():
     st.subheader("📊 VWAP & 9 EMA Strategy Cheat Sheet")
     st.caption("Master the VWAP bounce strategy for MNQ, MGC, and MES during NY session (2:30 PM - 4:30 PM UK time).")
@@ -2250,19 +2250,18 @@ def run_app():
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12 = st.tabs([
+    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
         "📅 Regime Report", 
         "🤖 AI Bubble Watch", 
         "💵 DXY Dashboard",
-        "📊 ICT Backtest",
         "📋 Cheat Sheet",
         "🎯 Market Levels",
         "📝 Journal",
         "🌏 Asia Sniper",
         "🇺🇸 NY Afternoon",
-        "📈 VWAP & 9 EMA Strategy"  # NEW TAB
+        "📈 VWAP & 9 EMA Strategy"
     ])
     
     view_mode = st.sidebar.radio("View Mode", ["📈 Individual Assets", "💵 DXY Dashboard"])
@@ -2498,24 +2497,21 @@ def run_app():
         render_dxy_dashboard()
 
     with main_tab6:
-        run_ict_backtest()
-
-    with main_tab7:
         run_cheat_sheet()
 
-    with main_tab8:
+    with main_tab7:
         run_level_marker()
 
-    with main_tab9:
+    with main_tab8:
         run_journal_tab()
 
-    with main_tab10:
+    with main_tab9:
         run_asia_sniper()
 
-    with main_tab11:
+    with main_tab10:
         run_ny_afternoon_sniper()
 
-    with main_tab12:
+    with main_tab11:
         run_vwap_ema_strategy()
 
 if __name__ == "__main__":
