@@ -1702,6 +1702,200 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **Veteran Tip:** Today's London Sniper trades off the *Asia Range*. Today's NY Sniper trades off the *NY Pre-Market Range*. Use the correct sniper for each session.")
 
+# ============ NY AFTERNOON SNIPER (NEW) ============
+def run_ny_afternoon_sniper():
+    """
+    Late NY Session Sniper (3:30 PM - 4:30 PM UK Time)
+    Better price action after initial NY chaos settles.
+    """
+    st.subheader("🇺🇸 NY Afternoon Sniper (3:30 PM - 4:30 PM UK)")
+    st.caption("Better price action after initial NY chaos settles. More reliable entries with fewer fakeouts.")
+    
+    # Check if it's afternoon session (UK time)
+    now_utc = datetime.now(timezone.utc)
+    uk_time = now_utc.astimezone(timezone(timedelta(hours=1)))
+    current_hour = uk_time.hour
+    current_minute = uk_time.minute
+    
+    # Only show if between 3:30 PM and 4:30 PM UK time
+    is_afternoon_session = (current_hour == 15 and current_minute >= 30) or (current_hour == 16 and current_minute <= 30)
+    
+    if not is_afternoon_session:
+        st.info("⏳ NY Afternoon Session runs from 3:30 PM - 4:30 PM UK time. Check back then for better entries!")
+        return
+    
+    with st.spinner("Fetching NY Afternoon data..."):
+        mnq = yf.Ticker("MNQ=F").history(period="2d", interval="5m")
+        mgc = yf.Ticker("MGC=F").history(period="2d", interval="5m")
+    
+    if mnq.empty:
+        st.warning("No data available.")
+        return
+    
+    today = datetime.now().date()
+    macro = get_macro_data()
+    vix = macro['vix']
+    tnx = macro['yield_10y']
+    
+    # Get NY Pre-Market Range
+    mnq_today = mnq[mnq.index.date == today]
+    ny_mnq = mnq_today.between_time('08:00', '09:29')
+    
+    if ny_mnq.empty:
+        st.warning("NY Pre-Market data not available.")
+        return
+    
+    ny_high = ny_mnq['High'].max()
+    ny_low = ny_mnq['Low'].min()
+    ny_range = ny_high - ny_low
+    
+    # Current price (3:30 PM)
+    afternoon_mnq = mnq_today.between_time('08:00', '16:30')
+    if afternoon_mnq.empty:
+        st.warning("Afternoon data not available.")
+        return
+    
+    current_price = afternoon_mnq['Close'].iloc[-1]
+    
+    # Calculate VWAP for the day
+    vwap = (afternoon_mnq['Close'] * afternoon_mnq['Volume']).cumsum() / afternoon_mnq['Volume'].cumsum()
+    current_vwap = vwap.iloc[-1]
+    
+    # Calculate 9 EMA
+    ema9 = afternoon_mnq['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+    
+    # Display current state
+    st.markdown(f"""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 20px;'>
+        <h4>📊 Current State (3:30 PM UK)</h4>
+        <b>Price:</b> {current_price:.2f}<br>
+        <b>NY Range:</b> {ny_high:.2f} - {ny_low:.2f} (Range: {ny_range:.2f})<br>
+        <b>VWAP:</b> {current_vwap:.2f}<br>
+        <b>9 EMA:</b> {ema9:.2f}<br>
+        <b>VIX:</b> {vix:.2f} | <b>10Y:</b> {tnx:.2f}%
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ ENTRY SIGNAL 1: BREAKOUT CONFIRMATION ============
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🚀 Breakout Confirmation")
+        
+        # Check breakout
+        above_ny_high = current_price > ny_high + 15
+        below_ny_low = current_price < ny_low - 15
+        above_vwap = current_price > current_vwap
+        below_vwap = current_price < current_vwap
+        
+        if above_ny_high and above_vwap:
+            long_entry = current_price
+            long_sl = ny_high - 15
+            long_tp = long_entry + (ny_range * 2)
+            
+            st.success(f"✅ **LONG SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> > {long_entry:.2f}<br>
+                <b>SL:</b> {long_sl:.2f}<br>
+                <b>TP:</b> {long_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(long_tp - long_entry) / (long_entry - long_sl):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        elif below_ny_low and below_vwap:
+            short_entry = current_price
+            short_sl = ny_low + 15
+            short_tp = short_entry - (ny_range * 2)
+            
+            st.error(f"✅ **SHORT SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                <b>Entry:</b> < {short_entry:.2f}<br>
+                <b>SL:</b> {short_sl:.2f}<br>
+                <b>TP:</b> {short_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(short_entry - short_tp) / (short_sl - short_entry):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("⏳ No breakout yet. Price still inside/around NY Range.")
+    
+    with col2:
+        st.markdown("### 🔄 Pullback to 9 EMA")
+        
+        # Check pullback entry
+        at_ema9 = abs(current_price - ema9) / current_price < 0.002
+        price_above_ny_high = current_price > ny_high
+        
+        if at_ema9 and price_above_ny_high:
+            pullback_entry = current_price
+            pullback_sl = ny_high - 10
+            pullback_tp = pullback_entry + (ny_range * 1.5)
+            
+            st.success(f"✅ **PULLBACK LONG SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> {pullback_entry:.2f}<br>
+                <b>SL:</b> {pullback_sl:.2f}<br>
+                <b>TP:</b> {pullback_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(pullback_tp - pullback_entry) / (pullback_entry - pullback_sl):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("⏳ Waiting for pullback to 9 EMA after breakout.")
+    
+    # ============ VOLATILITY ADJUSTMENT ============
+    st.markdown("---")
+    st.markdown("### 📊 Volatility Adjustment")
+    
+    # Adjust stops based on VIX
+    if vix > 30:
+        st.warning(f"⚠️ **EXTREME VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Increase stops by 50%, reduce position size to 25%")
+    elif vix > 25:
+        st.warning(f"⚠️ **HIGH VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Increase stops by 30%, reduce position size to 50%")
+    elif vix > 20:
+        st.info(f"⚡ **ELEVATED VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Normal stops, reduce position size to 75%")
+    else:
+        st.success(f"✅ **NORMAL VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Normal stops, full position size")
+    
+    # ============ EXECUTION RULES ============
+    st.markdown("---")
+    st.markdown("### 🎯 Execution Rules")
+    
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+        <h4>📋 Entry Checklist (3:30 PM - 4:30 PM)</h4>
+        <ul>
+            <li>✅ <b>Time:</b> 3:30 PM - 4:30 PM UK time</li>
+            <li>✅ <b>Breakout:</b> Price above NY High + 15 OR below NY Low - 15</li>
+            <li>✅ <b>VWAP:</b> Price on same side as VWAP (above for long, below for short)</li>
+            <li>✅ <b>Volume:</b> Volume > average (confirmation)</li>
+            <li>✅ <b>VIX:</b> Below 30 for normal sizing</li>
+            <li>✅ <b>Better Entry:</b> Pullback to 9 EMA after breakout</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============ TRADE MANAGEMENT ============
+    st.markdown("---")
+    st.markdown("### 📈 Trade Management")
+    
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+        <h4>📊 Managing Your Trade</h4>
+        <ul>
+            <li>✅ <b>Move to breakeven:</b> When price moves 50% of target</li>
+            <li>✅ <b>Take partial profits:</b> 50% at 1:1 risk/reward</li>
+            <li>✅ <b>Hold remainder:</b> For full target (2x range)</li>
+            <li>✅ <b>Exit by 4:30 PM:</b> Unless trend is very strong</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ============ ASIA SNIPER ENGINE (24/7 - FIXED WITH WORKING TICKERS) ============
 def run_asia_sniper():
     st.subheader("🌏 Asia Session Sniper Triggers")
@@ -2480,7 +2674,7 @@ def run_app():
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12, main_tab13 = st.tabs([
+    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12, main_tab13, main_tab14 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
         "📅 Regime Report", 
@@ -2493,7 +2687,8 @@ def run_app():
         "🎯 Market Levels",
         "🌀 Order Flow",
         "📝 Journal",
-        "🌏 Asia Sniper"
+        "🌏 Asia Sniper",
+        "🇺🇸 NY Afternoon"  # NEW TAB
     ])
     
     view_mode = st.sidebar.radio("View Mode", ["📈 Individual Assets", "💵 DXY Dashboard"])
@@ -2751,6 +2946,9 @@ def run_app():
 
     with main_tab13:
         run_asia_sniper()
+
+    with main_tab14:
+        run_ny_afternoon_sniper()
 
 if __name__ == "__main__":
     run_app()
