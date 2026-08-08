@@ -1045,6 +1045,302 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
 
+# ============ HIGH YIELD PROTOCOL STRATEGY (NEW TAB) ============
+def run_high_yield_protocol():
+    """
+    Strategy for high yield markets (US10Y > 4.5%)
+    Fades extremes and trades ranges when VWAP/EMA strategy fails
+    """
+    st.subheader("⚡ High Yield Protocol (4.5%+ Yields)")
+    st.caption("Designed for markets where VWAP & EMA fail. Fades extremes and trades ranges. US Session only.")
+    
+    # Get current market data
+    macro = get_macro_data()
+    tnx = macro['yield_10y']
+    vix = macro['vix']
+    dxy = macro['dxy']
+    
+    # Check if strategy applies
+    if tnx < 4.5:
+        st.success(f"🟢 Yields are below 4.5% ({tnx:.2f}%). Use your normal VWAP & EMA strategy.")
+        st.info("💡 The High Yield Protocol is only for markets with US10Y > 4.5%.")
+        return
+    
+    # Show active warning
+    st.warning(f"🔴 HIGH YIELD MODE ACTIVE (US10Y: {tnx:.2f}%)")
+    st.caption("⚠️ VWAP & EMA strategy is INVALID in this environment. Use fade extremes and range trades.")
+    
+    # Display market conditions
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric("US10Y Yield", f"{tnx:.2f}%", delta="HIGH", delta_color="inverse")
+    with col_m2:
+        st.metric("VIX", f"{vix:.2f}", delta="ELEVATED" if vix > 20 else "NORMAL")
+    with col_m3:
+        st.metric("DXY", f"{dxy:.2f}", delta="")
+    
+    st.markdown("---")
+    
+    # ============ GET NY DATA ============
+    with st.spinner("Fetching NY session data..."):
+        mnq = yf.Ticker("MNQ=F").history(period="2d", interval="5m")
+        mgc = yf.Ticker("MGC=F").history(period="2d", interval="5m")
+        mes = yf.Ticker("MES=F").history(period="2d", interval="5m")
+    
+    if mnq.empty:
+        st.warning("No data available. Market may be closed.")
+        return
+    
+    today = datetime.now().date()
+    mnq_today = mnq[mnq.index.date == today]
+    ny_mnq = mnq_today.between_time('08:00', '09:29')
+    
+    if ny_mnq.empty:
+        st.warning("NY Pre-Market data not available. Check back after 1:00 PM UK time.")
+        return
+    
+    # ============ KEY LEVELS ============
+    ny_high = ny_mnq['High'].max()
+    ny_low = ny_mnq['Low'].min()
+    ny_range = ny_high - ny_low
+    
+    # Current price (most recent)
+    current_price = mnq_today['Close'].iloc[-1]
+    
+    # Calculate VWAP for reference (even though we're not using it for entry)
+    vwap = (mnq_today['Close'] * mnq_today['Volume']).cumsum() / mnq_today['Volume'].cumsum()
+    current_vwap = vwap.iloc[-1]
+    
+    # ============ DISPLAY LEVELS ============
+    st.markdown("### 📊 Key NY Levels")
+    
+    col_l1, col_l2, col_l3, col_l4 = st.columns(4)
+    with col_l1:
+        st.metric("NY High", f"{ny_high:.2f}")
+    with col_l2:
+        st.metric("NY Low", f"{ny_low:.2f}")
+    with col_l3:
+        st.metric("Range", f"{ny_range:.2f} pts")
+    with col_l4:
+        st.metric("Current Price", f"{current_price:.2f}")
+    
+    # ============ SIGNAL 1: FADE EXTREMES ============
+    st.markdown("### 📉 Signal 1: Fade Extremes")
+    st.caption("When price reaches the extreme of the NY range, fade it back toward the middle.")
+    
+    near_high = current_price > (ny_high - 10)
+    near_low = current_price < (ny_low + 10)
+    mid_range = (ny_high + ny_low) / 2
+    
+    col_s1, col_s2 = st.columns(2)
+    
+    with col_s1:
+        st.markdown("#### 🟢 Fade High (SHORT)")
+        if near_high and not near_low:
+            short_entry = current_price
+            short_stop = ny_high + 5
+            short_target = current_price - (ny_range * 0.5)
+            
+            st.error(f"✅ **SHORT SIGNAL ACTIVE**")
+            st.markdown(f"""
+            <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                <b>Entry:</b> {short_entry:.2f}<br>
+                <b>Stop Loss:</b> {short_stop:.2f}<br>
+                <b>Target:</b> {short_target:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(short_entry - short_target) / (short_stop - short_entry):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            st.caption("📌 Fading the NY high - expecting pullback toward mid-range")
+        else:
+            st.info(f"⏳ Price at {current_price:.2f}. Need to be within 10 points of NY High ({ny_high:.2f}) for SHORT signal.")
+            if not near_high:
+                st.caption(f"📌 Distance to NY High: {ny_high - current_price:.2f} pts")
+    
+    with col_s2:
+        st.markdown("#### 🔴 Fade Low (LONG)")
+        if near_low and not near_high:
+            long_entry = current_price
+            long_stop = ny_low - 5
+            long_target = current_price + (ny_range * 0.5)
+            
+            st.success(f"✅ **LONG SIGNAL ACTIVE**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> {long_entry:.2f}<br>
+                <b>Stop Loss:</b> {long_stop:.2f}<br>
+                <b>Target:</b> {long_target:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(long_target - long_entry) / (long_entry - long_stop):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            st.caption("📌 Fading the NY low - expecting bounce toward mid-range")
+        else:
+            st.info(f"⏳ Price at {current_price:.2f}. Need to be within 10 points of NY Low ({ny_low:.2f}) for LONG signal.")
+            if not near_low:
+                st.caption(f"📌 Distance to NY Low: {current_price - ny_low:.2f} pts")
+    
+    # ============ SIGNAL 2: RANGE TRADING ============
+    st.markdown("---")
+    st.markdown("### 📊 Signal 2: Range Trading")
+    st.caption("Trade the edges of the NY range with tighter stops and targets.")
+    
+    range_bottom = ny_low + 10
+    range_top = ny_high - 10
+    
+    col_r1, col_r2 = st.columns(2)
+    
+    with col_r1:
+        st.markdown("#### 📈 Range Top (SHORT)")
+        if current_price > range_top:
+            r_short_entry = current_price
+            r_short_stop = ny_high + 5
+            r_short_target = ny_low + 20
+            
+            st.error(f"✅ **RANGE SHORT SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                <b>Entry:</b> {r_short_entry:.2f}<br>
+                <b>Stop:</b> {r_short_stop:.2f}<br>
+                <b>Target:</b> {r_short_target:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(r_short_entry - r_short_target) / (r_short_stop - r_short_entry):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            st.caption(f"📌 Price above range top ({range_top:.2f}). Target range bottom.")
+        else:
+            st.info(f"⏳ Price below range top ({range_top:.2f}). Waiting for range edge.")
+    
+    with col_r2:
+        st.markdown("#### 📉 Range Bottom (LONG)")
+        if current_price < range_bottom:
+            r_long_entry = current_price
+            r_long_stop = ny_low - 5
+            r_long_target = ny_high - 20
+            
+            st.success(f"✅ **RANGE LONG SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> {r_long_entry:.2f}<br>
+                <b>Stop:</b> {r_long_stop:.2f}<br>
+                <b>Target:</b> {r_long_target:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(r_long_target - r_long_entry) / (r_long_entry - r_long_stop):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            st.caption(f"📌 Price below range bottom ({range_bottom:.2f}). Target range top.")
+        else:
+            st.info(f"⏳ Price above range bottom ({range_bottom:.2f}). Waiting for range edge.")
+    
+    # ============ EXECUTION RULES ============
+    st.markdown("---")
+    st.markdown("### 🎯 Execution Rules")
+    
+    col_e1, col_e2, col_e3 = st.columns(3)
+    
+    with col_e1:
+        st.markdown("""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+            <h4>⏰ Time</h4>
+            <ul style='color: #e8ecf1;'>
+                <li>✅ <b>3:30 PM - 4:30 PM UK</b></li>
+                <li>✅ Best window</li>
+                <li>❌ Avoid 2:30-3:00 PM</li>
+                <li>❌ Avoid after 4:30 PM</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_e2:
+        st.markdown("""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+            <h4>📊 Position Size</h4>
+            <ul style='color: #e8ecf1;'>
+                <li>✅ <b>25% of normal</b></li>
+                <li>✅ 1 contract only</li>
+                <li>❌ No scaling in</li>
+                <li>❌ No averaging</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_e3:
+        st.markdown("""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+            <h4>🎯 Targets</h4>
+            <ul style='color: #e8ecf1;'>
+                <li>✅ <b>50% of range</b></li>
+                <li>✅ Quick in/out</li>
+                <li>❌ No holding overnight</li>
+                <li>❌ No trailing stops</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ============ VOLATILITY ADJUSTMENT ============
+    st.markdown("---")
+    st.markdown("### 📊 Volatility Adjustment")
+    
+    if vix > 30:
+        st.warning(f"⚠️ **EXTREME VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("🔴 Do NOT trade. VIX > 30 makes any strategy unreliable.")
+    elif vix > 25:
+        st.warning(f"⚠️ **HIGH VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("🟡 Use 25% position size, widen stops to 10 points.")
+    elif vix > 20:
+        st.info(f"⚡ **ELEVATED VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("🟢 Use 25-50% position size, normal stops (5-8 points).")
+    else:
+        st.success(f"✅ **NORMAL VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("🟢 Use 50% position size, normal stops (5 points).")
+    
+    # ============ RISK WARNING ============
+    st.markdown("---")
+    st.warning("""
+    ⚠️ **HIGH YIELD PROTOCOL WARNING:**
+    
+    - This is a **CONTRARIAN** strategy (trading against extremes)
+    - It works BEST in **sideways/high yield markets**
+    - It FAILS in **strong trending markets**
+    - USE **25% POSITION SIZE** maximum
+    - TAKE PROFITS **QUICKLY** (don't get greedy)
+    - **EXIT BY 4:30 PM UK** - No overnight holds
+    
+    If the market trends strongly, this strategy will lose money.
+    Use the VWAP & EMA strategy instead in trending markets.
+    """)
+    
+    # ============ STRATEGY COMPARISON ============
+    st.markdown("### 📊 When to Use Which Strategy")
+    
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+        <table style='width: 100%; color: #e8ecf1; border-collapse: collapse;'>
+            <tr style='background-color: #2a2a2a;'>
+                <th style='padding: 8px; border: 1px solid #3a3a3a;'>Condition</th>
+                <th style='padding: 8px; border: 1px solid #3a3a3a;'>Strategy</th>
+                <th style='padding: 8px; border: 1px solid #3a3a3a;'>Action</th>
+            </tr>
+            <tr>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>US10Y < 4.3%<br>VIX 15-25<br>Clear Trend</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>🟢 VWAP & EMA</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>✅ Trade normally</td>
+            </tr>
+            <tr>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>US10Y 4.3-4.5%<br>VIX 20-25<br>No Clear Trend</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>🟡 VWAP with Caution</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>⚠️ 50% size, wider stops</td>
+            </tr>
+            <tr style='background-color: #2a1a1a;'>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>US10Y > 4.5%<br>VIX 20-30<br>Ranging Market</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>🔴 High Yield Protocol</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>✅ 25% size, fade extremes</td>
+            </tr>
+            <tr>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>VIX > 30</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>❌ NO STRATEGY</td>
+                <td style='padding: 8px; border: 1px solid #3a3a3a;'>⛔ Sit out completely</td>
+            </tr>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ============ EXECUTION ENGINE: LONDON & NY OPEN SNIPERS ============
 def run_level_marker():
     st.subheader("🎯 Global Session Sniper Triggers")
@@ -2250,7 +2546,7 @@ def run_app():
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11 = st.tabs([
+    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
         "📅 Regime Report", 
@@ -2261,7 +2557,8 @@ def run_app():
         "📝 Journal",
         "🌏 Asia Sniper",
         "🇺🇸 NY Afternoon",
-        "📈 VWAP & 9 EMA Strategy"
+        "📈 VWAP & 9 EMA Strategy",
+        "⚡ High Yield Protocol"  # NEW TAB
     ])
     
     view_mode = st.sidebar.radio("View Mode", ["📈 Individual Assets", "💵 DXY Dashboard"])
@@ -2513,6 +2810,9 @@ def run_app():
 
     with main_tab11:
         run_vwap_ema_strategy()
+
+    with main_tab12:
+        run_high_yield_protocol()
 
 if __name__ == "__main__":
     run_app()
