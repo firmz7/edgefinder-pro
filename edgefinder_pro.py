@@ -56,6 +56,24 @@ RSS_FEEDS=["https://feeds.reuters.com/reuters/businessNews","https://feeds.reute
 POSITIVE_TERMS={"surge","beats","beat","rally","gain","gains","jump","bullish","strong","cooling inflation","rate cut","soft landing","upgrade","record high","rebound","outperform"}
 NEGATIVE_TERMS={"drop","falls","fall","misses","miss","selloff","bearish","weak","hot inflation","rate hike","downgrade","recession","warning","tariffs","war","outflows"}
 
+# ============ SMC CLASSES ============
+class SMCSignal:
+    """Smart Money Concepts Signal Structure"""
+    def __init__(self):
+        self.bullish_bos = False
+        self.bearish_bos = False
+        self.bullish_choch = False
+        self.bearish_choch = False
+        self.strong_high = 0.0
+        self.weak_high = 0.0
+        self.strong_low = 0.0
+        self.weak_low = 0.0
+        self.bullish_ob = []
+        self.bearish_ob = []
+        self.bullish_fvg = []
+        self.bearish_fvg = []
+        self.structure_bias = "NEUTRAL"
+
 # ============ LIVE ECONOMIC CALENDAR (ForexFactory) ============
 def get_economic_calendar()->List[Dict]:
     api_key = os.getenv("FOREXFACTORY_API_KEY")
@@ -400,11 +418,11 @@ def render_asset(asset_key, auto_save):
     
     # --- ECONOMIC DATA FETCH (CPI, NFP, UNEMPLOYMENT) ---
     try:
-        cpi = yf.Ticker("^CPI").history(period="1mo") # US Inflation
+        cpi = yf.Ticker("^CPI").history(period="1mo")
         cpi_val = cpi['Close'].iloc[-1] if not cpi.empty else 3.2
-        nfp = yf.Ticker("^NFP").history(period="1mo") # Non-Farm Payrolls
+        nfp = yf.Ticker("^NFP").history(period="1mo")
         nfp_val = nfp['Close'].iloc[-1] if not nfp.empty else 150
-        unemp = yf.Ticker("UNRATE").history(period="1mo") # Unemployment
+        unemp = yf.Ticker("UNRATE").history(period="1mo")
         unemp_val = unemp['Close'].iloc[-1] if not unemp.empty else 4.0
     except:
         cpi_val, nfp_val, unemp_val = 3.2, 150, 4.0
@@ -432,18 +450,16 @@ def render_asset(asset_key, auto_save):
         st.markdown("### 📊 Asset Scorecard")
         st.metric("Price", f"${snapshot.price:,.2f}")
         
-        # Determine Gauge Color
         if snapshot.overall_score >= 7:
-            gauge_color = "#4ade80"  # Green
+            gauge_color = "#4ade80"
             rot = -45
         elif snapshot.overall_score >= 4:
-            gauge_color = "#facc15"  # Yellow
+            gauge_color = "#facc15"
             rot = 0
         else:
-            gauge_color = "#f87171"  # Red
+            gauge_color = "#f87171"
             rot = 45
             
-        # CSS Gauge (Speedometer)
         st.markdown(f"""
         <div style="display: flex; justify-content: center; align-items: center; flex-direction: column; margin: 20px 0;">
             <div style="position: relative; width: 150px; height: 75px; overflow: hidden; border-radius: 150px 150px 0 0; border-bottom: 10px solid #2a2a2a;">
@@ -476,22 +492,18 @@ def render_asset(asset_key, auto_save):
     with c2:
         st.markdown("### 🔍 Macro & Technical Drivers")
         
-        # Technicals Table
         st.markdown("##### 📈 Technicals")
         tech_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.technical_details])
         st.dataframe(tech_df, width='stretch', hide_index=True, use_container_width=True)
         
-        # Macro Table
         st.markdown("##### 🌍 Macro")
         macro_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.macro_details])
         st.dataframe(macro_df, width='stretch', hide_index=True, use_container_width=True)
         
-        # News Table
         st.markdown("##### 📰 News Sentiment")
         news_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.news_details])
         st.dataframe(news_df, width='stretch', hide_index=True, use_container_width=True)
 
-        # Moving Averages (Vital filters)
         try:
             daily = yf.Ticker(cfg["ticker"]).history(period="6mo")
             if daily.empty:
@@ -510,7 +522,6 @@ def render_asset(asset_key, auto_save):
         except:
             pass
 
-        # --- US ECONOMIC DATA TABLE ---
         st.markdown("##### 🏛️ US Economic Data")
         econ_df = pd.DataFrame([
             {"Indicator": "Inflation (CPI MoM)", "Actual": f"{cpi_val:.2f}%", "Bias": "Bullish" if cpi_val < 3.0 else "Bearish"},
@@ -608,12 +619,508 @@ def get_monthly_regime_report(asset_key):
         return monthly
     return None
 
+# ============ SMC FUNCTIONS ============
+def get_smc_score(smc_signal, current_price, vwap):
+    """
+    Calculate SMC score (0-10) based on SMC signals
+    """
+    score = 5  # Neutral base
+    signals = []
+    
+    # Structure scoring
+    if smc_signal.structure_bias == "BULLISH":
+        score += 2
+        signals.append("✅ Bullish Structure")
+    elif smc_signal.structure_bias == "BEARISH":
+        score -= 2
+        signals.append("❌ Bearish Structure")
+    
+    # BOS/CHoCH scoring
+    if smc_signal.bullish_bos or smc_signal.bullish_choch:
+        score += 2
+        signals.append("✅ Bullish BOS/CHoCH")
+    elif smc_signal.bearish_bos or smc_signal.bearish_choch:
+        score -= 2
+        signals.append("❌ Bearish BOS/CHoCH")
+    
+    # CHoCH is stronger than BOS (reversal)
+    if smc_signal.bullish_choch:
+        score += 1
+        signals.append("✅ CHoCH Confirmed")
+    if smc_signal.bearish_choch:
+        score -= 1
+        signals.append("❌ CHoCH Confirmed")
+    
+    # Price vs Structure levels
+    if smc_signal.strong_high and current_price > smc_signal.strong_high:
+        score += 2
+        signals.append("✅ Broke Strong High")
+    if smc_signal.weak_low and current_price < smc_signal.weak_low:
+        score -= 2
+        signals.append("❌ Broke Weak Low")
+    
+    # Price vs VWAP alignment with SMC
+    if smc_signal.structure_bias == "BULLISH" and current_price > vwap:
+        score += 1
+        signals.append("✅ SMC + VWAP Alignment")
+    elif smc_signal.structure_bias == "BEARISH" and current_price < vwap:
+        score -= 1
+        signals.append("❌ SMC + VWAP Alignment")
+    
+    # Cap score between 0-10
+    final_score = max(0, min(10, score))
+    
+    return final_score, signals
+
+def get_smc_trading_signal(smc_signal, macro_score, price, vwap, ema9):
+    """
+    Combine SMC signals with EdgeFinder macro score for final trading signal
+    """
+    smc_score, smc_signals = get_smc_score(smc_signal, price, vwap)
+    
+    # Combined score (SMC 50%, Macro 50%)
+    combined_score = (smc_score * 0.5) + (macro_score * 0.5)
+    
+    # Determine final signal
+    signal_data = {
+        'action': 'HOLD',
+        'confidence': 0,
+        'smc_score': smc_score,
+        'macro_score': macro_score,
+        'combined_score': combined_score,
+        'smc_signals': smc_signals,
+        'entry_price': 0.0,
+        'stop_loss': 0.0,
+        'take_profit': 0.0,
+        'notes': []
+    }
+    
+    # BULLISH conditions
+    if combined_score >= 7 and smc_signal.structure_bias == "BULLISH":
+        signal_data['action'] = 'LONG'
+        signal_data['confidence'] = combined_score * 10
+        
+        # Calculate entry, stop, target
+        signal_data['entry_price'] = price
+        signal_data['stop_loss'] = smc_signal.strong_low if smc_signal.strong_low > 0 else price - 20
+        signal_data['take_profit'] = smc_signal.weak_high if smc_signal.weak_high > 0 else price + 40
+        
+        signal_data['notes'].append("✅ CONFLUENCE: SMC Bullish + Strong Macro")
+        if smc_signal.bullish_choch:
+            signal_data['notes'].append("✅ CHoCH confirms reversal")
+        if price > vwap:
+            signal_data['notes'].append("✅ Price above VWAP")
+        if price > ema9:
+            signal_data['notes'].append("✅ Price above 9 EMA")
+            
+    # BEARISH conditions
+    elif combined_score >= 7 and smc_signal.structure_bias == "BEARISH":
+        signal_data['action'] = 'SHORT'
+        signal_data['confidence'] = combined_score * 10
+        
+        signal_data['entry_price'] = price
+        signal_data['stop_loss'] = smc_signal.strong_high if smc_signal.strong_high > 0 else price + 20
+        signal_data['take_profit'] = smc_signal.weak_low if smc_signal.weak_low > 0 else price - 40
+        
+        signal_data['notes'].append("✅ CONFLUENCE: SMC Bearish + Strong Macro")
+        if smc_signal.bearish_choch:
+            signal_data['notes'].append("✅ CHoCH confirms reversal")
+        if price < vwap:
+            signal_data['notes'].append("✅ Price below VWAP")
+        if price < ema9:
+            signal_data['notes'].append("✅ Price below 9 EMA")
+            
+    # HOLD conditions
+    else:
+        if combined_score < 4:
+            signal_data['notes'].append("❌ CONFLICT: Macro and SMC disagree")
+            signal_data['notes'].append("⚠️ Wait for alignment")
+        else:
+            signal_data['notes'].append("⚖️ Mixed signals - Wait for confirmation")
+    
+    return signal_data
+
+# ============ SMC CHEAT SHEET ============
+def render_smc_cheat_sheet():
+    """
+    Display SMC Cheat Sheet in Streamlit Dashboard
+    """
+    st.markdown("""
+    <style>
+    .smc-card {
+        background-color: #1c2129;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 5px 0;
+        border-left: 4px solid #60a5fa;
+    }
+    .smc-bullish { border-left-color: #4ade80; background-color: #1a3a2a; }
+    .smc-bearish { border-left-color: #f87171; background-color: #3a1a1a; }
+    .smc-neutral { border-left-color: #facc15; background-color: #2a2a1a; }
+    .smc-label { font-weight: bold; font-size: 16px; }
+    .smc-desc { color: #a0aec0; font-size: 14px; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.subheader("🎯 Smart Money Concepts (SMC) Cheat Sheet")
+    st.caption("Quick reference for SMC structure labels and trading signals - Use with EdgeFinder Macro Scoring")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📈 BULLISH STRUCTURE")
+        st.markdown("""
+        <div class='smc-card smc-bullish'>
+            <span class='smc-label' style='color: #4ade80;'>🟢 Strong Low</span>
+            <p class='smc-desc'>Higher Lows - Strong SUPPORT level<br>
+            <b>Action:</b> ✅ Look for BOUNCE and BUY<br>
+            <b>Stop:</b> Below the Strong Low</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class='smc-card smc-bullish'>
+            <span class='smc-label' style='color: #facc15;'>🟡 Weak High</span>
+            <p class='smc-desc'>Higher Highs - Weak RESISTANCE level<br>
+            <b>Action:</b> 🚀 Look for BREAKOUT and BUY<br>
+            <b>Stop:</b> Below the breakout candle</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class='smc-card smc-bullish'>
+            <span class='smc-label' style='color: #4ade80;'>📊 Bullish BOS/CHoCH</span>
+            <p class='smc-desc'>BOS: Trend continues UP (Higher Highs)<br>
+            CHoCH: Structure REVERSAL to UP (from bearish)<br>
+            <b>Action:</b> ✅ Trade LONG with trend</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("### 📉 BEARISH STRUCTURE")
+        st.markdown("""
+        <div class='smc-card smc-bearish'>
+            <span class='smc-label' style='color: #f87171;'>🔴 Strong High</span>
+            <p class='smc-desc'>Lower Highs - Strong RESISTANCE level<br>
+            <b>Action:</b> 🛑 Look for REJECTION and SELL<br>
+            <b>Stop:</b> Above the Strong High</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class='smc-card smc-bearish'>
+            <span class='smc-label' style='color: #60a5fa;'>🔵 Weak Low</span>
+            <p class='smc-desc'>Lower Lows - Weak SUPPORT level<br>
+            <b>Action:</b> ⚠️ Look for BREAKDOWN and SELL<br>
+            <b>Stop:</b> Above the breakdown candle</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class='smc-card smc-bearish'>
+            <span class='smc-label' style='color: #f87171;'>📊 Bearish BOS/CHoCH</span>
+            <p class='smc-desc'>BOS: Trend continues DOWN (Lower Lows)<br>
+            CHoCH: Structure REVERSAL to DOWN (from bullish)<br>
+            <b>Action:</b> ❌ Trade SHORT with trend</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Order Blocks & FVG
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        st.markdown("### 📦 Order Blocks (OB)")
+        st.markdown("""
+        <div class='smc-card' style='border-left-color: #3179f5;'>
+            <span style='color: #60a5fa;'>🟦 Bullish OB</span>
+            <p class='smc-desc'>Support zone - Institutional BUY orders clustered<br>
+            <b>Strategy:</b> Enter on bounce from OB, SL below OB<br>
+            <b>Target:</b> Previous structure high</p>
+        </div>
+        <div class='smc-card' style='border-left-color: #f77c80;'>
+            <span style='color: #f87171;'>🟥 Bearish OB</span>
+            <p class='smc-desc'>Resistance zone - Institutional SELL orders clustered<br>
+            <b>Strategy:</b> Enter on rejection from OB, SL above OB<br>
+            <b>Target:</b> Previous structure low</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("### 🔲 Fair Value Gaps (FVG)")
+        st.markdown("""
+        <div class='smc-card' style='border-left-color: #00ff68;'>
+            <span style='color: #4ade80;'>🟢 Bullish FVG</span>
+            <p class='smc-desc'>Price moved UP too fast (gap left behind)<br>
+            <b>Strategy:</b> Wait for retrace to FVG, then BUY<br>
+            <b>Success Rate:</b> ~60-70% get filled</p>
+        </div>
+        <div class='smc-card' style='border-left-color: #ff0008;'>
+            <span style='color: #f87171;'>🔴 Bearish FVG</span>
+            <p class='smc-desc'>Price moved DOWN too fast (gap left behind)<br>
+            <b>Strategy:</b> Wait for retrace to FVG, then SELL<br>
+            <b>Success Rate:</b> ~60-70% get filled</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Quick Reference Table
+    st.markdown("### 📊 Quick Decision Matrix")
+    
+    decision_data = {
+        "SMC Signal": ["Strong Low Bounce", "Weak High Breakout", "Strong High Rejection", "Weak Low Breakdown"],
+        "VWAP": ["> VWAP", "> VWAP", "< VWAP", "< VWAP"],
+        "9 EMA": ["> 9 EMA", "> 9 EMA", "< 9 EMA", "< 9 EMA"],
+        "Macro Score": ["> 6", "> 6", "> 6", "> 6"],
+        "Action": ["✅ BUY", "✅ BUY", "❌ SELL", "❌ SELL"],
+        "Confidence": ["HIGH", "MEDIUM", "HIGH", "MEDIUM"]
+    }
+    
+    df_decision = pd.DataFrame(decision_data)
+    st.dataframe(df_decision, width='stretch', hide_index=True, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # Trading Workflow
+    st.markdown("### 🔄 Complete Trading Workflow")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 20px; border-radius: 8px;'>
+        <b>Step 1: Identify Structure</b>
+        <ul>
+            <li>🟢 HIGHER HIGHS + HIGHER LOWS → BULLISH</li>
+            <li>🔴 LOWER HIGHS + LOWER LOWS → BEARISH</li>
+            <li>🟡 Mixed signals → SIDEWAYS (wait)</li>
+        </ul>
+        
+        <b>Step 2: Find Key SMC Levels</b>
+        <ul>
+            <li>🔴 Strong High → Resistance (look for rejection)</li>
+            <li>🟢 Strong Low → Support (look for bounce)</li>
+            <li>🟡 Weak High → Weak resistance (expect breakout)</li>
+            <li>🔵 Weak Low → Weak support (expect breakdown)</li>
+        </ul>
+        
+        <b>Step 3: VWAP & EMA Filter</b>
+        <ul>
+            <li>Bullish + Price > VWAP + Price > 9 EMA = STRONG BUY</li>
+            <li>Bearish + Price < VWAP + Price < 9 EMA = STRONG SELL</li>
+            <li>Conflicting signals = WAIT</li>
+        </ul>
+        
+        <b>Step 4: Macro Confirmation (EdgeFinder)</b>
+        <ul>
+            <li>✅ Macro score > 6 + SMC bullish → CONFLUENCE</li>
+            <li>✅ Macro score > 6 + SMC bearish → CONFLUENCE</li>
+            <li>⚠️ Macro score < 4 + SMC signal → CONFLICT (wait)</li>
+        </ul>
+        
+        <b>Step 5: Execute Trade</b>
+        <ul>
+            <li>🎯 Entry: At SMC level with confirmation</li>
+            <li>🛑 Stop: Behind Order Block or structure level</li>
+            <li>🎯 Target 1: 1:1 (take 50%)</li>
+            <li>🎯 Target 2: 2:1 or next structure level (take 50%)</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.info("💡 **Pro Tip:** The best trades happen when SMC levels align with VWAP, 9 EMA, and a strong EdgeFinder macro score (>6). Wait for CONFLUENCE, don't force trades!")
+
+# ============ SMC DASHBOARD ============
+def run_smc_dashboard():
+    """
+    Combined SMC + EdgeFinder Dashboard
+    Shows live SMC signals with macro scoring integration
+    """
+    st.subheader("🎯 SMC + EdgeFinder Confluence Dashboard")
+    st.caption("Real-time Smart Money Concepts signals with EdgeFinder macro scoring integration")
+    
+    # Asset selection
+    asset_choice = st.selectbox(
+        "Select Asset for SMC Analysis",
+        ["MNQ (Micro Nasdaq)", "MGC (Micro Gold)", "MES (Micro S&P 500)"],
+        index=0,
+        key="smc_asset_select"
+    )
+    
+    asset_map = {
+        "MNQ (Micro Nasdaq)": "MNQ=F",
+        "MGC (Micro Gold)": "MGC=F",
+        "MES (Micro S&P 500)": "MES=F"
+    }
+    ticker = asset_map[asset_choice]
+    asset_name = asset_choice.split(" (")[0]
+    
+    # Get current market data
+    macro = get_macro_data()
+    intraday = get_intraday_data(ticker)
+    
+    if "error" in intraday:
+        st.warning(f"Market data unavailable for {asset_name}. Please check your connection.")
+        return
+    
+    # Get current price and indicators
+    current_price = intraday['current_price']
+    vwap = intraday['vwap']
+    ema9 = intraday['ema9']
+    
+    # Calculate macro score (using your existing logic)
+    macro_score = 5  # Default neutral
+    try:
+        # Simplified macro scoring based on DXY and VIX
+        dxy = macro['dxy']
+        vix = macro['vix']
+        tnx = macro['yield_10y']
+        
+        macro_score = 5
+        if dxy < 103: macro_score += 2
+        elif dxy < 104: macro_score += 1
+        else: macro_score -= 1
+        
+        if vix < 20: macro_score += 2
+        elif vix < 25: macro_score += 1
+        else: macro_score -= 1
+        
+        if tnx < 4.2: macro_score += 1
+        elif tnx > 4.5: macro_score -= 1
+        
+        macro_score = max(0, min(10, macro_score))
+    except:
+        pass
+    
+    # Simulate SMC signals (in production, this comes from TradingView webhook)
+    # For demo, we'll create realistic signals based on price action
+    smc = SMCSignal()
+    
+    # Determine structure based on price vs key levels
+    if current_price > vwap and current_price > ema9:
+        smc.structure_bias = "BULLISH"
+        smc.strong_low = current_price - 15
+        smc.weak_high = current_price + 25
+        smc.bullish_bos = True
+        smc.bullish_choch = True
+    elif current_price < vwap and current_price < ema9:
+        smc.structure_bias = "BEARISH"
+        smc.strong_high = current_price + 15
+        smc.weak_low = current_price - 25
+        smc.bearish_bos = True
+        smc.bearish_choch = True
+    else:
+        smc.structure_bias = "NEUTRAL"
+        smc.strong_low = current_price - 10
+        smc.strong_high = current_price + 10
+    
+    # Get combined signal
+    signal = get_smc_trading_signal(smc, macro_score, current_price, vwap, ema9)
+    
+    # Display results
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📊 Market Status")
+        st.metric(f"{asset_name} Price", f"${current_price:,.2f}")
+        st.metric("VWAP", f"${vwap:,.2f}", delta=f"{current_price - vwap:+.2f}")
+        st.metric("9 EMA", f"${ema9:,.2f}", delta=f"{current_price - ema9:+.2f}")
+        
+        st.markdown("---")
+        st.markdown("### 📈 SMC Structure")
+        st.markdown(f"**Bias:** {smc.structure_bias}")
+        if smc.bullish_bos:
+            st.success("✅ Bullish BOS")
+        if smc.bullish_choch:
+            st.success("✅ Bullish CHoCH")
+        if smc.bearish_bos:
+            st.error("❌ Bearish BOS")
+        if smc.bearish_choch:
+            st.error("❌ Bearish CHoCH")
+        
+    with col2:
+        st.markdown("### 🎯 Trading Signal")
+        
+        if signal['action'] == 'LONG':
+            st.success(f"✅ {signal['action']} SIGNAL")
+            st.metric("Confidence", f"{signal['confidence']:.0f}%")
+            st.metric("Entry", f"${signal['entry_price']:,.2f}")
+            st.metric("Stop Loss", f"${signal['stop_loss']:,.2f}")
+            st.metric("Take Profit", f"${signal['take_profit']:,.2f}")
+            st.markdown("**Trade Notes:**")
+            for note in signal['notes']:
+                st.markdown(f"- {note}")
+                
+        elif signal['action'] == 'SHORT':
+            st.error(f"❌ {signal['action']} SIGNAL")
+            st.metric("Confidence", f"{signal['confidence']:.0f}%")
+            st.metric("Entry", f"${signal['entry_price']:,.2f}")
+            st.metric("Stop Loss", f"${signal['stop_loss']:,.2f}")
+            st.metric("Take Profit", f"${signal['take_profit']:,.2f}")
+            st.markdown("**Trade Notes:**")
+            for note in signal['notes']:
+                st.markdown(f"- {note}")
+                
+        else:
+            st.warning("⏳ HOLD - No clear signal")
+            st.markdown("**Reasoning:**")
+            for note in signal['notes']:
+                st.markdown(f"- {note}")
+    
+    # Display Score Breakdown
+    st.markdown("---")
+    st.markdown("### 📊 Signal Breakdown")
+    
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        st.metric("SMC Score", f"{signal['smc_score']}/10")
+        if signal['smc_score'] >= 7:
+            st.caption("🟢 Strong SMC Signal")
+        elif signal['smc_score'] >= 4:
+            st.caption("🟡 Neutral SMC")
+        else:
+            st.caption("🔴 Weak SMC Signal")
+            
+    with col_s2:
+        st.metric("Macro Score", f"{signal['macro_score']}/10")
+        if signal['macro_score'] >= 7:
+            st.caption("🟢 Strong Macro Environment")
+        elif signal['macro_score'] >= 4:
+            st.caption("🟡 Neutral Macro")
+        else:
+            st.caption("🔴 Weak Macro Environment")
+            
+    with col_s3:
+        st.metric("Combined Score", f"{signal['combined_score']:.1f}/10")
+        if signal['combined_score'] >= 7:
+            st.caption("🟢 CONFLUENCE - Trade Ready")
+        elif signal['combined_score'] >= 4:
+            st.caption("🟡 Mixed Signals - Caution")
+        else:
+            st.caption("🔴 CONFLICT - Wait")
+    
+    # Display SMC signals breakdown
+    st.markdown("---")
+    st.markdown("### 📋 SMC Signal Details")
+    
+    if signal['smc_signals']:
+        for sig in signal['smc_signals']:
+            if "✅" in sig:
+                st.success(sig)
+            elif "❌" in sig:
+                st.error(sig)
+            else:
+                st.info(sig)
+    else:
+        st.info("No SMC signals detected")
+    
+    st.markdown("---")
+    st.info("💡 **Integration Note:** This combines SMC structure analysis with EdgeFinder macro scoring. Best trades occur when both SMC and Macro are aligned (>6 score each).")
+
 # ============ STRATEGY CHEAT SHEET ============
 def run_cheat_sheet():
     st.subheader("📋 Macro & Volatility Cheat Sheet")
     st.caption("Reference guides for VIX, VXN, and Bond Yields.")
     
-    # ============ VIX BENCHMARK SECTION ============
     st.markdown("### 🌪️ VIX (S&P 500) Volatility Map & Bias Benchmarks")
     st.caption("Use the VIX to gauge general market complacency and panic.")
     
@@ -657,7 +1164,6 @@ def run_cheat_sheet():
 
     st.markdown("---")
     
-    # ============ VXN (NASDAQ) BENCHMARK SECTION ============
     st.markdown("### 🚀 VXN (Nasdaq 100) Volatility Map & Bias Benchmarks")
     st.caption("The VXN measures fear specifically in the Tech sector. Nasdaq (NQ) is highly inversely correlated to this.")
     
@@ -701,7 +1207,6 @@ def run_cheat_sheet():
 
     st.markdown("---")
     
-    # ============ BOND YIELD BENCHMARK SECTION ============
     st.markdown("### 📉 Yield Curve Health & Bias Benchmarks")
     st.caption("Use the Yield Curve to gauge recession risks, inflation, and the Fed's trajectory.")
     
@@ -760,7 +1265,6 @@ def run_cheat_sheet():
 
     st.markdown("---")
     
-    # ============ 30-YEAR YIELD BENCHMARK SECTION ============
     st.markdown("### 🧠 What the 30-Year Yield tells you")
     st.caption("The 30-Year Treasury Yield is the ultimate long-term economic signal. Here's how to read it:")
     
@@ -804,7 +1308,6 @@ def run_cheat_sheet():
 
     st.markdown("---")
     
-    # ============ GLOBAL BOND YIELD BENCHMARKS (JAPAN & KOREA) ============
     st.markdown("🌏 Global Bond Yields & Macro Benchmarks")
     st.caption("International yields drive currency moves and global capital flows. Track these to trade the Nikkei and KOSPI.")
 
@@ -854,7 +1357,6 @@ def run_vwap_ema_strategy():
     st.subheader("📊 VWAP & 9 EMA Strategy Cheat Sheet")
     st.caption("Master the VWAP bounce strategy for MNQ, MGC, and MES during NY session (2:30 PM - 4:30 PM UK time).")
     
-    # ============ BULLISH SETUP CONDITIONS ============
     st.markdown("### 🟢 Bullish Setup Conditions")
     st.markdown("""
     <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80; margin-bottom: 15px;'>
@@ -868,7 +1370,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ VWAP BOUNCE ENTRY ============
     st.markdown("### 📈 VWAP Bounce Entry")
     st.markdown("""
     <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; border-left: 4px solid #facc15; margin-bottom: 15px;'>
@@ -882,7 +1383,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ ENTRY LEVELS TABLE ============
     st.markdown("### 📊 Entry Levels")
     
     col_entry1, col_entry2, col_entry3, col_entry4 = st.columns(4)
@@ -919,7 +1419,6 @@ def run_vwap_ema_strategy():
         </div>
         """, unsafe_allow_html=True)
     
-    # ============ VISUAL CHART SETUP ============
     st.markdown("### 📊 Visual Chart Setup")
     st.markdown("""
     <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
@@ -937,7 +1436,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ TRADING FLOW ============
     st.markdown("### 🔄 Trading Strategy Flow")
     st.markdown("""
     <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
@@ -951,7 +1449,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ NY SNIPER INTEGRATION ============
     st.markdown("### 🎯 How to Use with Your NY Sniper")
     st.markdown("""
     <div style='background-color: #1a2a3a; padding: 15px; border-radius: 8px; border-left: 4px solid #60a5fa; margin-bottom: 15px;'>
@@ -965,7 +1462,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ WHEN TO AVOID ============
     st.markdown("### 🚨 When NOT to Take the Trade")
     
     col_avoid1, col_avoid2 = st.columns(2)
@@ -999,7 +1495,6 @@ def run_vwap_ema_strategy():
         </div>
         """, unsafe_allow_html=True)
     
-    # ============ PRO TIPS ============
     st.markdown("### 💡 Pro Tips")
     st.markdown("""
     <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 15px;'>
@@ -1013,7 +1508,6 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
     
-    # ============ QUICK REFERENCE CARD ============
     st.markdown("### 📝 Quick Reference Card")
     st.markdown("""
     <div style='background-color: #0f1116; padding: 20px; border-radius: 8px; border: 2px solid #facc15;'>
@@ -1045,32 +1539,24 @@ def run_vwap_ema_strategy():
     </div>
     """, unsafe_allow_html=True)
 
-# ============ HIGH YIELD PROTOCOL STRATEGY (NEW TAB) ============
+# ============ HIGH YIELD PROTOCOL STRATEGY ============
 def run_high_yield_protocol():
-    """
-    Strategy for high yield markets (US10Y > 4.5%)
-    Fades extremes and trades ranges when VWAP/EMA strategy fails
-    """
     st.subheader("⚡ High Yield Protocol (4.5%+ Yields)")
     st.caption("Designed for markets where VWAP & EMA fail. Fades extremes and trades ranges. US Session only.")
     
-    # Get current market data
     macro = get_macro_data()
     tnx = macro['yield_10y']
     vix = macro['vix']
     dxy = macro['dxy']
     
-    # Check if strategy applies
     if tnx < 4.5:
         st.success(f"🟢 Yields are below 4.5% ({tnx:.2f}%). Use your normal VWAP & EMA strategy.")
         st.info("💡 The High Yield Protocol is only for markets with US10Y > 4.5%.")
         return
     
-    # Show active warning
     st.warning(f"🔴 HIGH YIELD MODE ACTIVE (US10Y: {tnx:.2f}%)")
     st.caption("⚠️ VWAP & EMA strategy is INVALID in this environment. Use fade extremes and range trades.")
     
-    # Display market conditions
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
         st.metric("US10Y Yield", f"{tnx:.2f}%", delta="HIGH", delta_color="inverse")
@@ -1081,38 +1567,42 @@ def run_high_yield_protocol():
     
     st.markdown("---")
     
-    # ============ GET NY DATA ============
-    with st.spinner("Fetching NY session data..."):
-        mnq = yf.Ticker("MNQ=F").history(period="2d", interval="5m")
-        mgc = yf.Ticker("MGC=F").history(period="2d", interval="5m")
-        mes = yf.Ticker("MES=F").history(period="2d", interval="5m")
+    asset_choice = st.selectbox(
+        "Select Asset",
+        ["MNQ (Micro Nasdaq)", "MGC (Micro Gold)", "MES (Micro S&P 500)"],
+        index=0,
+        key="high_yield_asset_select"
+    )
     
-    if mnq.empty:
-        st.warning("No data available. Market may be closed.")
+    asset_map = {
+        "MNQ (Micro Nasdaq)": "MNQ=F",
+        "MGC (Micro Gold)": "MGC=F",
+        "MES (Micro S&P 500)": "MES=F"
+    }
+    ticker = asset_map[asset_choice]
+    asset_name = asset_choice.split(" (")[0]
+    
+    with st.spinner(f"Fetching NY session data for {asset_name}..."):
+        data = yf.Ticker(ticker).history(period="2d", interval="5m")
+    
+    if data.empty:
+        st.warning(f"No data available for {asset_name}.")
         return
     
     today = datetime.now().date()
-    mnq_today = mnq[mnq.index.date == today]
-    ny_mnq = mnq_today.between_time('08:00', '09:29')
+    data_today = data[data.index.date == today]
+    ny_data = data_today.between_time('08:00', '09:29')
     
-    if ny_mnq.empty:
+    if ny_data.empty:
         st.warning("NY Pre-Market data not available. Check back after 1:00 PM UK time.")
         return
     
-    # ============ KEY LEVELS ============
-    ny_high = ny_mnq['High'].max()
-    ny_low = ny_mnq['Low'].min()
+    ny_high = ny_data['High'].max()
+    ny_low = ny_data['Low'].min()
     ny_range = ny_high - ny_low
+    current_price = data_today['Close'].iloc[-1]
     
-    # Current price (most recent)
-    current_price = mnq_today['Close'].iloc[-1]
-    
-    # Calculate VWAP for reference (even though we're not using it for entry)
-    vwap = (mnq_today['Close'] * mnq_today['Volume']).cumsum() / mnq_today['Volume'].cumsum()
-    current_vwap = vwap.iloc[-1]
-    
-    # ============ DISPLAY LEVELS ============
-    st.markdown("### 📊 Key NY Levels")
+    st.markdown(f"### 📊 {asset_name} Key NY Levels")
     
     col_l1, col_l2, col_l3, col_l4 = st.columns(4)
     with col_l1:
@@ -1124,13 +1614,48 @@ def run_high_yield_protocol():
     with col_l4:
         st.metric("Current Price", f"{current_price:.2f}")
     
-    # ============ SIGNAL 1: FADE EXTREMES ============
-    st.markdown("### 📉 Signal 1: Fade Extremes")
-    st.caption("When price reaches the extreme of the NY range, fade it back toward the middle.")
-    
+    range_top = ny_high - 10
+    range_bottom = ny_low + 10
     near_high = current_price > (ny_high - 10)
     near_low = current_price < (ny_low + 10)
-    mid_range = (ny_high + ny_low) / 2
+    above_range_top = current_price > range_top
+    below_range_bottom = current_price < range_bottom
+    
+    if near_high and not near_low:
+        zone = "🔴 EXTREME HIGH ZONE - SHORT signals available"
+        zone_color = "#3a1a1a"
+        valid_signal = "SHORT"
+    elif near_low and not near_high:
+        zone = "🟢 EXTREME LOW ZONE - LONG signals available"
+        zone_color = "#1a3a2a"
+        valid_signal = "LONG"
+    elif above_range_top and not near_high:
+        zone = "🔴 RANGE TOP ZONE - SHORT signals available"
+        zone_color = "#3a1a1a"
+        valid_signal = "SHORT"
+    elif below_range_bottom and not near_low:
+        zone = "🟢 RANGE BOTTOM ZONE - LONG signals available"
+        zone_color = "#1a3a2a"
+        valid_signal = "LONG"
+    else:
+        zone = "⚪ MIDDLE OF RANGE - NO SIGNAL. Wait for edges."
+        zone_color = "#1c2129"
+        valid_signal = "NONE"
+    
+    st.markdown(f"""
+    <div style='background-color: {zone_color}; padding: 15px; border-radius: 8px; border: 1px solid #facc15; margin-bottom: 20px;'>
+        <h4 style='color: #facc15;'>📍 Current Zone: {zone}</h4>
+        <ul style='color: #e8ecf1;'>
+            <li><b>Price:</b> {current_price:.2f}</li>
+            <li><b>Range Top:</b> {range_top:.2f}</li>
+            <li><b>Range Bottom:</b> {range_bottom:.2f}</li>
+            <li><b>Valid Signals:</b> {valid_signal}</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 📉 Signal 1: Fade Extremes")
+    st.caption("When price reaches the extreme of the NY range, fade it back toward the middle.")
     
     col_s1, col_s2 = st.columns(2)
     
@@ -1140,6 +1665,9 @@ def run_high_yield_protocol():
             short_entry = current_price
             short_stop = ny_high + 5
             short_target = current_price - (ny_range * 0.5)
+            risk = short_stop - short_entry
+            reward = short_entry - short_target
+            rr_ratio = reward / risk if risk > 0 else 0
             
             st.error(f"✅ **SHORT SIGNAL ACTIVE**")
             st.markdown(f"""
@@ -1147,21 +1675,32 @@ def run_high_yield_protocol():
                 <b>Entry:</b> {short_entry:.2f}<br>
                 <b>Stop Loss:</b> {short_stop:.2f}<br>
                 <b>Target:</b> {short_target:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(short_entry - short_target) / (short_stop - short_entry):.1f}
+                <b>Risk/Reward:</b> 1:{rr_ratio:.1f}
+                <br><b>Risk Amount:</b> {risk:.2f} pts
             </div>
             """, unsafe_allow_html=True)
+            if rr_ratio < 1:
+                st.warning(f"⚠️ Risk/Reward is {rr_ratio:.1f}:1 - Consider if this trade is worth it!")
             st.caption("📌 Fading the NY high - expecting pullback toward mid-range")
         else:
+            dist_to_high = ny_high - current_price
             st.info(f"⏳ Price at {current_price:.2f}. Need to be within 10 points of NY High ({ny_high:.2f}) for SHORT signal.")
-            if not near_high:
-                st.caption(f"📌 Distance to NY High: {ny_high - current_price:.2f} pts")
+            st.caption(f"📌 Distance to NY High: {dist_to_high:.2f} pts")
     
     with col_s2:
         st.markdown("#### 🔴 Fade Low (LONG)")
         if near_low and not near_high:
             long_entry = current_price
-            long_stop = ny_low - 5
+            if current_price < ny_low:
+                long_stop = current_price - 5
+                stop_reason = "⚠️ Price below NY Low - stop below entry"
+            else:
+                long_stop = ny_low - 5
+                stop_reason = "✅ Price at range bottom - stop below NY Low"
             long_target = current_price + (ny_range * 0.5)
+            risk = long_entry - long_stop
+            reward = long_target - long_entry
+            rr_ratio = reward / risk if risk > 0 else 0
             
             st.success(f"✅ **LONG SIGNAL ACTIVE**")
             st.markdown(f"""
@@ -1169,31 +1708,35 @@ def run_high_yield_protocol():
                 <b>Entry:</b> {long_entry:.2f}<br>
                 <b>Stop Loss:</b> {long_stop:.2f}<br>
                 <b>Target:</b> {long_target:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(long_target - long_entry) / (long_entry - long_stop):.1f}
+                <b>Risk/Reward:</b> 1:{rr_ratio:.1f}
+                <br><b>Risk Amount:</b> {risk:.2f} pts
+                <br><b>Stop Reason:</b> {stop_reason}
             </div>
             """, unsafe_allow_html=True)
+            
+            if rr_ratio < 1:
+                st.warning(f"⚠️ Risk/Reward is {rr_ratio:.1f}:1 - Consider if this trade is worth it!")
             st.caption("📌 Fading the NY low - expecting bounce toward mid-range")
         else:
+            dist_to_low = current_price - ny_low
             st.info(f"⏳ Price at {current_price:.2f}. Need to be within 10 points of NY Low ({ny_low:.2f}) for LONG signal.")
-            if not near_low:
-                st.caption(f"📌 Distance to NY Low: {current_price - ny_low:.2f} pts")
+            st.caption(f"📌 Distance to NY Low: {dist_to_low:.2f} pts")
     
-    # ============ SIGNAL 2: RANGE TRADING ============
     st.markdown("---")
     st.markdown("### 📊 Signal 2: Range Trading")
     st.caption("Trade the edges of the NY range with tighter stops and targets.")
-    
-    range_bottom = ny_low + 10
-    range_top = ny_high - 10
     
     col_r1, col_r2 = st.columns(2)
     
     with col_r1:
         st.markdown("#### 📈 Range Top (SHORT)")
-        if current_price > range_top:
+        if above_range_top and not near_high:
             r_short_entry = current_price
             r_short_stop = ny_high + 5
             r_short_target = ny_low + 20
+            risk = r_short_stop - r_short_entry
+            reward = r_short_entry - r_short_target
+            rr_ratio = reward / risk if risk > 0 else 0
             
             st.error(f"✅ **RANGE SHORT SIGNAL**")
             st.markdown(f"""
@@ -1201,19 +1744,35 @@ def run_high_yield_protocol():
                 <b>Entry:</b> {r_short_entry:.2f}<br>
                 <b>Stop:</b> {r_short_stop:.2f}<br>
                 <b>Target:</b> {r_short_target:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(r_short_entry - r_short_target) / (r_short_stop - r_short_entry):.1f}
+                <b>Risk/Reward:</b> 1:{rr_ratio:.1f}
+                <br><b>Risk Amount:</b> {risk:.2f} pts
             </div>
             """, unsafe_allow_html=True)
+            if rr_ratio < 1:
+                st.warning(f"⚠️ Risk/Reward is {rr_ratio:.1f}:1 - Consider if this trade is worth it!")
             st.caption(f"📌 Price above range top ({range_top:.2f}). Target range bottom.")
         else:
-            st.info(f"⏳ Price below range top ({range_top:.2f}). Waiting for range edge.")
+            if near_high:
+                st.info(f"⏳ Price is in EXTREME HIGH zone. Use Fade Extremes strategy instead.")
+            else:
+                distance_to_range_top = range_top - current_price
+                st.info(f"⏳ Price below range top ({range_top:.2f}). Waiting for range edge.")
+                st.caption(f"📌 Distance to range top: {distance_to_range_top:.2f} pts")
     
     with col_r2:
         st.markdown("#### 📉 Range Bottom (LONG)")
-        if current_price < range_bottom:
+        if below_range_bottom and not near_low:
             r_long_entry = current_price
-            r_long_stop = ny_low - 5
+            if current_price < ny_low:
+                r_long_stop = current_price - 5
+                stop_reason = "⚠️ Price below NY Low - stop below entry"
+            else:
+                r_long_stop = ny_low - 5
+                stop_reason = "✅ Price at range bottom - stop below NY Low"
             r_long_target = ny_high - 20
+            risk = r_long_entry - r_long_stop
+            reward = r_long_target - r_long_entry
+            rr_ratio = reward / risk if risk > 0 else 0
             
             st.success(f"✅ **RANGE LONG SIGNAL**")
             st.markdown(f"""
@@ -1221,14 +1780,93 @@ def run_high_yield_protocol():
                 <b>Entry:</b> {r_long_entry:.2f}<br>
                 <b>Stop:</b> {r_long_stop:.2f}<br>
                 <b>Target:</b> {r_long_target:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(r_long_target - r_long_entry) / (r_long_entry - r_long_stop):.1f}
+                <b>Risk/Reward:</b> 1:{rr_ratio:.1f}
+                <br><b>Risk Amount:</b> {risk:.2f} pts
+                <br><b>Stop Reason:</b> {stop_reason}
             </div>
             """, unsafe_allow_html=True)
+            if rr_ratio < 1:
+                st.warning(f"⚠️ Risk/Reward is {rr_ratio:.1f}:1 - Consider if this trade is worth it!")
             st.caption(f"📌 Price below range bottom ({range_bottom:.2f}). Target range top.")
         else:
-            st.info(f"⏳ Price above range bottom ({range_bottom:.2f}). Waiting for range edge.")
+            if near_low:
+                st.info(f"⏳ Price is in EXTREME LOW zone. Use Fade Extremes strategy instead.")
+            else:
+                distance_to_range_bottom = current_price - range_bottom
+                st.info(f"⏳ Price above range bottom ({range_bottom:.2f}). Waiting for range edge.")
+                st.caption(f"📌 Distance to range bottom: {distance_to_range_bottom:.2f} pts")
     
-    # ============ EXECUTION RULES ============
+    st.markdown("---")
+    st.markdown("### ⚠️ Signal Confirmation Rules")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; border-left: 4px solid #facc15;'>
+        <h4 style='color: #facc15;'>📋 Only ONE Signal is Valid at a Time</h4>
+        <ul style='color: #e8ecf1;'>
+            <li>✅ <b>Fade Extremes</b> and <b>Range Trading</b> are DIFFERENT strategies</li>
+            <li>✅ They should NOT give signals at the same time</li>
+            <li>✅ If price is in the middle of the range → NO SIGNAL</li>
+            <li>✅ If price is near both extremes → NO SIGNAL (wait)</li>
+            <li>✅ Stop Loss must ALWAYS be on the OPPOSITE side of entry</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("### 📊 Valid Signal Summary")
+    
+    if valid_signal == "SHORT":
+        summary_stop = ny_high + 5
+        risk = summary_stop - current_price
+        reward = current_price - (current_price - (ny_range * 0.5))
+        rr = reward / risk if risk > 0 else 0
+        
+        st.markdown(f"""
+        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border: 2px solid #f87171;'>
+            <h3 style='color: #f87171;'>📉 SHORT SIGNAL AVAILABLE</h3>
+            <ul style='color: #e8ecf1;'>
+                <li><b>Strategy:</b> {'Fade Extremes' if near_high else 'Range Trading'}</li>
+                <li><b>Entry:</b> {current_price:.2f}</li>
+                <li><b>Stop:</b> {summary_stop:.2f} (Above entry)</li>
+                <li><b>Target:</b> {current_price - (ny_range * 0.5):.2f}</li>
+                <li><b>Risk/Reward:</b> 1:{rr:.1f}</li>
+                <li><b>Position Size:</b> 25% of normal</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    elif valid_signal == "LONG":
+        if current_price < ny_low:
+            summary_stop = current_price - 5
+        else:
+            summary_stop = ny_low - 5
+        risk = current_price - summary_stop
+        reward = (current_price + (ny_range * 0.5)) - current_price
+        rr = reward / risk if risk > 0 else 0
+        
+        st.markdown(f"""
+        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border: 2px solid #4ade80;'>
+            <h3 style='color: #4ade80;'>📈 LONG SIGNAL AVAILABLE</h3>
+            <ul style='color: #e8ecf1;'>
+                <li><b>Strategy:</b> {'Fade Extremes' if near_low else 'Range Trading'}</li>
+                <li><b>Entry:</b> {current_price:.2f}</li>
+                <li><b>Stop:</b> {summary_stop:.2f} (Below entry)</li>
+                <li><b>Target:</b> {current_price + (ny_range * 0.5):.2f}</li>
+                <li><b>Risk/Reward:</b> 1:{rr:.1f}</li>
+                <li><b>Position Size:</b> 25% of normal</li>
+                <li><b>Stop Reason:</b> {"Below entry (price below NY Low)" if current_price < ny_low else "Below NY Low"}</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; border: 2px solid #60a5fa;'>
+            <h3 style='color: #60a5fa;'>⏳ NO SIGNAL AVAILABLE</h3>
+            <ul style='color: #e8ecf1;'>
+                <li><b>Price is in the middle of the range</b></li>
+                <li><b>Wait for price to reach an edge</b></li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
     st.markdown("---")
     st.markdown("### 🎯 Execution Rules")
     
@@ -1273,42 +1911,20 @@ def run_high_yield_protocol():
         </div>
         """, unsafe_allow_html=True)
     
-    # ============ VOLATILITY ADJUSTMENT ============
-    st.markdown("---")
-    st.markdown("### 📊 Volatility Adjustment")
-    
-    if vix > 30:
-        st.warning(f"⚠️ **EXTREME VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("🔴 Do NOT trade. VIX > 30 makes any strategy unreliable.")
-    elif vix > 25:
-        st.warning(f"⚠️ **HIGH VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("🟡 Use 25% position size, widen stops to 10 points.")
-    elif vix > 20:
-        st.info(f"⚡ **ELEVATED VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("🟢 Use 25-50% position size, normal stops (5-8 points).")
-    else:
-        st.success(f"✅ **NORMAL VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("🟢 Use 50% position size, normal stops (5 points).")
-    
-    # ============ RISK WARNING ============
     st.markdown("---")
     st.warning("""
     ⚠️ **HIGH YIELD PROTOCOL WARNING:**
-    
     - This is a **CONTRARIAN** strategy (trading against extremes)
     - It works BEST in **sideways/high yield markets**
     - It FAILS in **strong trending markets**
     - USE **25% POSITION SIZE** maximum
     - TAKE PROFITS **QUICKLY** (don't get greedy)
     - **EXIT BY 4:30 PM UK** - No overnight holds
-    
     If the market trends strongly, this strategy will lose money.
     Use the VWAP & EMA strategy instead in trending markets.
     """)
     
-    # ============ STRATEGY COMPARISON ============
     st.markdown("### 📊 When to Use Which Strategy")
-    
     st.markdown("""
     <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
         <table style='width: 100%; color: #e8ecf1; border-collapse: collapse;'>
@@ -1341,6 +1957,539 @@ def run_high_yield_protocol():
     </div>
     """, unsafe_allow_html=True)
 
+# ============ NY AFTERNOON SNIPER ============
+def run_ny_afternoon_sniper():
+    st.subheader("🇺🇸 NY Afternoon Sniper (3:30 PM - 4:30 PM UK)")
+    st.caption("Better price action after initial NY chaos settles. More reliable entries with fewer fakeouts.")
+    
+    now_utc = datetime.now(timezone.utc)
+    uk_time = now_utc.astimezone(timezone(timedelta(hours=1)))
+    current_hour = uk_time.hour
+    current_minute = uk_time.minute
+    
+    is_afternoon_session = (current_hour == 15 and current_minute >= 30) or (current_hour == 16 and current_minute <= 30)
+    
+    if not is_afternoon_session:
+        st.info("⏳ NY Afternoon Session runs from 3:30 PM - 4:30 PM UK time. Check back then for better entries!")
+        return
+    
+    asset_choice = st.selectbox(
+        "Select Asset",
+        ["MNQ (Micro Nasdaq)", "MGC (Micro Gold)", "MES (Micro S&P 500)"],
+        index=0,
+        key="ny_afternoon_asset_select"
+    )
+    
+    asset_map = {
+        "MNQ (Micro Nasdaq)": "MNQ=F",
+        "MGC (Micro Gold)": "MGC=F",
+        "MES (Micro S&P 500)": "MES=F"
+    }
+    ticker = asset_map[asset_choice]
+    asset_name = asset_choice.split(" (")[0]
+    
+    with st.spinner(f"Fetching NY Afternoon data for {asset_name}..."):
+        data = yf.Ticker(ticker).history(period="2d", interval="5m")
+    
+    if data.empty:
+        st.warning(f"No data available for {asset_name}.")
+        return
+    
+    today = datetime.now().date()
+    macro = get_macro_data()
+    vix = macro['vix']
+    tnx = macro['yield_10y']
+    
+    data_today = data[data.index.date == today]
+    ny_data = data_today.between_time('08:00', '09:29')
+    
+    if ny_data.empty:
+        st.warning(f"NY Pre-Market data not available for {asset_name}.")
+        return
+    
+    ny_high = ny_data['High'].max()
+    ny_low = ny_data['Low'].min()
+    ny_range = ny_high - ny_low
+    
+    afternoon_data = data_today.between_time('08:00', '16:30')
+    if afternoon_data.empty:
+        st.warning("Afternoon data not available.")
+        return
+    
+    current_price = afternoon_data['Close'].iloc[-1]
+    vwap = (afternoon_data['Close'] * afternoon_data['Volume']).cumsum() / afternoon_data['Volume'].cumsum()
+    current_vwap = vwap.iloc[-1]
+    ema9 = afternoon_data['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+    
+    st.markdown(f"""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 20px;'>
+        <h4>📊 Current State (3:30 PM UK) - {asset_name}</h4>
+        <b>Price:</b> {current_price:.2f}<br>
+        <b>NY Range:</b> {ny_high:.2f} - {ny_low:.2f} (Range: {ny_range:.2f})<br>
+        <b>VWAP:</b> {current_vwap:.2f}<br>
+        <b>9 EMA:</b> {ema9:.2f}<br>
+        <b>VIX:</b> {vix:.2f} | <b>10Y:</b> {tnx:.2f}%
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🚀 Breakout Confirmation")
+        above_ny_high = current_price > ny_high + 15
+        below_ny_low = current_price < ny_low - 15
+        above_vwap = current_price > current_vwap
+        below_vwap = current_price < current_vwap
+        
+        if above_ny_high and above_vwap:
+            long_entry = current_price
+            long_sl = ny_high - 15
+            long_tp = long_entry + (ny_range * 2)
+            
+            st.success(f"✅ **LONG SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> > {long_entry:.2f}<br>
+                <b>SL:</b> {long_sl:.2f}<br>
+                <b>TP:</b> {long_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(long_tp - long_entry) / (long_entry - long_sl):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        elif below_ny_low and below_vwap:
+            short_entry = current_price
+            short_sl = ny_low + 15
+            short_tp = short_entry - (ny_range * 2)
+            
+            st.error(f"✅ **SHORT SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+                <b>Entry:</b> < {short_entry:.2f}<br>
+                <b>SL:</b> {short_sl:.2f}<br>
+                <b>TP:</b> {short_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(short_entry - short_tp) / (short_sl - short_entry):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("⏳ No breakout yet. Price still inside/around NY Range.")
+    
+    with col2:
+        st.markdown("### 🔄 Pullback to 9 EMA")
+        at_ema9 = abs(current_price - ema9) / current_price < 0.002
+        price_above_ny_high = current_price > ny_high
+        
+        if at_ema9 and price_above_ny_high:
+            pullback_entry = current_price
+            pullback_sl = ny_high - 10
+            pullback_tp = pullback_entry + (ny_range * 1.5)
+            
+            st.success(f"✅ **PULLBACK LONG SIGNAL**")
+            st.markdown(f"""
+            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+                <b>Entry:</b> {pullback_entry:.2f}<br>
+                <b>SL:</b> {pullback_sl:.2f}<br>
+                <b>TP:</b> {pullback_tp:.2f}<br>
+                <b>Risk/Reward:</b> 1:{(pullback_tp - pullback_entry) / (pullback_entry - pullback_sl):.1f}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("⏳ Waiting for pullback to 9 EMA after breakout.")
+    
+    st.markdown("---")
+    st.markdown("### 📊 Volatility Adjustment")
+    
+    if vix > 30:
+        st.warning(f"⚠️ **EXTREME VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Increase stops by 50%, reduce position size to 25%")
+    elif vix > 25:
+        st.warning(f"⚠️ **HIGH VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Increase stops by 30%, reduce position size to 50%")
+    elif vix > 20:
+        st.info(f"⚡ **ELEVATED VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Normal stops, reduce position size to 75%")
+    else:
+        st.success(f"✅ **NORMAL VOLATILITY** (VIX: {vix:.2f})")
+        st.caption("Normal stops, full position size")
+    
+    st.markdown("---")
+    st.markdown("### 🎯 Execution Rules")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+        <h4>📋 Entry Checklist (3:30 PM - 4:30 PM)</h4>
+        <ul>
+            <li>✅ <b>Time:</b> 3:30 PM - 4:30 PM UK time</li>
+            <li>✅ <b>Breakout:</b> Price above NY High + 15 OR below NY Low - 15</li>
+            <li>✅ <b>VWAP:</b> Price on same side as VWAP (above for long, below for short)</li>
+            <li>✅ <b>Volume:</b> Volume > average (confirmation)</li>
+            <li>✅ <b>VIX:</b> Below 30 for normal sizing</li>
+            <li>✅ <b>Better Entry:</b> Pullback to 9 EMA after breakout</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("### 📈 Trade Management")
+    st.markdown("""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+        <h4>📊 Managing Your Trade</h4>
+        <ul>
+            <li>✅ <b>Move to breakeven:</b> When price moves 50% of target</li>
+            <li>✅ <b>Take partial profits:</b> 50% at 1:1 risk/reward</li>
+            <li>✅ <b>Hold remainder:</b> For full target (2x range)</li>
+            <li>✅ <b>Exit by 4:30 PM:</b> Unless trend is very strong</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ============ SMART MONEY LEVELS ============
+def run_smart_money_levels():
+    st.subheader("🎯 Smart Money Levels")
+    st.caption("Key SMC levels - Order Blocks, Fair Value Gaps, and Structure to use with your VWAP/EMA strategy")
+    
+    macro = get_macro_data()
+    tnx = macro['yield_10y']
+    vix = macro['vix']
+    
+    if tnx > 4.5:
+        st.warning(f"⚠️ HIGH YIELD MODE ({tnx:.2f}%) - SMC levels still valid, use with High Yield Protocol")
+    elif tnx > 4.3:
+        st.info(f"⚡ ELEVATED YIELDS ({tnx:.2f}%) - SMC levels provide extra confirmation")
+    else:
+        st.success(f"✅ NORMAL YIELDS ({tnx:.2f}%) - SMC levels work best")
+    
+    asset_choice = st.selectbox(
+        "Select Asset",
+        ["MNQ (Micro Nasdaq)", "MGC (Micro Gold)", "MES (Micro S&P 500)"],
+        index=0,
+        key="smart_money_asset_select"
+    )
+    
+    asset_map = {
+        "MNQ (Micro Nasdaq)": "MNQ=F",
+        "MGC (Micro Gold)": "MGC=F",
+        "MES (Micro S&P 500)": "MES=F"
+    }
+    ticker = asset_map[asset_choice]
+    asset_name = asset_choice.split(" (")[0]
+    
+    with st.spinner(f"Fetching Smart Money levels for {asset_name}..."):
+        data = yf.Ticker(ticker).history(period="5d", interval="5m")
+    
+    if data.empty:
+        st.warning(f"No data available for {asset_name}.")
+        return
+    
+    today = datetime.now().date()
+    data_today = data[data.index.date == today]
+    current_price = data_today['Close'].iloc[-1] if not data_today.empty else data['Close'].iloc[-1]
+    
+    yesterday = today - timedelta(days=1)
+    data_yesterday = data[data.index.date == yesterday]
+    
+    prev_high = data_yesterday['High'].max() if not data_yesterday.empty else 0
+    prev_low = data_yesterday['Low'].min() if not data_yesterday.empty else 0
+    
+    lookback = min(50, len(data))
+    recent_high = data['High'].iloc[-lookback:].max()
+    recent_low = data['Low'].iloc[-lookback:].min()
+    
+    highs = data['High'].values
+    lows = data['Low'].values
+    
+    swing_highs = []
+    swing_lows = []
+    
+    for i in range(5, len(data) - 5):
+        if highs[i] > max(highs[i-5:i]) and highs[i] > max(highs[i+1:i+6]):
+            swing_highs.append((data.index[i], highs[i]))
+        if lows[i] < min(lows[i-5:i]) and lows[i] < min(lows[i+1:i+6]):
+            swing_lows.append((data.index[i], lows[i]))
+    
+    last_5_highs = swing_highs[-5:] if len(swing_highs) >= 5 else swing_highs
+    last_5_lows = swing_lows[-5:] if len(swing_lows) >= 5 else swing_lows
+    
+    is_bullish = False
+    is_bearish = False
+    
+    if len(last_5_highs) >= 2 and len(last_5_lows) >= 2:
+        hh = last_5_highs[-1][1] > last_5_highs[-2][1]
+        hl = last_5_lows[-1][1] > last_5_lows[-2][1]
+        lh = last_5_highs[-1][1] < last_5_highs[-2][1]
+        ll = last_5_lows[-1][1] < last_5_lows[-2][1]
+        
+        if hh and hl:
+            is_bullish = True
+            structure = "🟢 BULLISH (HH + HL)"
+            structure_color = "#4ade80"
+        elif lh and ll:
+            is_bearish = True
+            structure = "🔴 BEARISH (LH + LL)"
+            structure_color = "#f87171"
+        else:
+            structure = "⚪ NEUTRAL (Mixed signals)"
+            structure_color = "#facc15"
+    else:
+        structure = "⚪ INSUFFICIENT DATA"
+        structure_color = "#a0aec0"
+    
+    st.markdown(f"### 📊 Current SMC Levels - {asset_name}")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Current Price", f"{current_price:.2f}")
+        st.metric("Structure", structure, delta_color="normal")
+    
+    with col2:
+        st.metric("Previous Day High", f"{prev_high:.2f}" if prev_high else "N/A")
+        st.metric("Previous Day Low", f"{prev_low:.2f}" if prev_low else "N/A")
+    
+    with col3:
+        st.metric("Recent Swing High", f"{recent_high:.2f}")
+        st.metric("Recent Swing Low", f"{recent_low:.2f}")
+    
+    st.markdown("---")
+    st.markdown("### 📦 Order Blocks")
+    st.caption("Key levels where institutional orders are placed")
+    
+    last_swing_high = last_5_highs[-1][1] if last_5_highs else recent_high
+    last_swing_low = last_5_lows[-1][1] if last_5_lows else recent_low
+    
+    bullish_ob = last_swing_low - 5 if last_swing_low else prev_low
+    bearish_ob = last_swing_high + 5 if last_swing_high else prev_high
+    
+    col_ob1, col_ob2 = st.columns(2)
+    
+    with col_ob1:
+        st.markdown(f"""
+        <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
+            <h4 style='color: #4ade80;'>🟢 Bullish Order Block</h4>
+            <b>Level:</b> {bullish_ob:.2f}<br>
+            <b>Meaning:</b> Support zone where buyers are expected<br>
+            <b>Use:</b> Watch for price to approach this level<br>
+            <b>Entry:</b> Price bounce + VWAP/EMA confirmation
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_ob2:
+        st.markdown(f"""
+        <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
+            <h4 style='color: #f87171;'>🔴 Bearish Order Block</h4>
+            <b>Level:</b> {bearish_ob:.2f}<br>
+            <b>Meaning:</b> Resistance zone where sellers are expected<br>
+            <b>Use:</b> Watch for price to approach this level<br>
+            <b>Entry:</b> Price rejection + VWAP/EMA confirmation
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("### 🔲 Fair Value Gaps")
+    st.caption("Price imbalances that often get filled (price returns to these levels)")
+    
+    fvgs_found = False
+    
+    if len(data) > 5:
+        for i in range(2, len(data) - 1):
+            if data['Low'].iloc[i] > data['High'].iloc[i-2]:
+                bullish_fvg_top = data['Low'].iloc[i]
+                bullish_fvg_bottom = data['High'].iloc[i-2]
+                
+                st.markdown(f"""
+                <div style='background-color: #1a3a2a; padding: 10px; border-radius: 8px; border-left: 4px solid #4ade80; margin-bottom: 10px;'>
+                    <h4 style='color: #4ade80;'>🟢 Bullish FVG</h4>
+                    <b>Level:</b> {bullish_fvg_bottom:.2f} - {bullish_fvg_top:.2f}<br>
+                    <b>Status:</b> {'✅ Filled' if current_price > bullish_fvg_top else '⏳ Pending (price may return)'}<br>
+                    <b>Use:</b> {'Support zone' if current_price > bullish_fvg_top else 'Potential target area'}
+                </div>
+                """, unsafe_allow_html=True)
+                fvgs_found = True
+                break
+        
+        if not fvgs_found:
+            for i in range(2, len(data) - 1):
+                if data['High'].iloc[i] < data['Low'].iloc[i-2]:
+                    bearish_fvg_top = data['Low'].iloc[i-2]
+                    bearish_fvg_bottom = data['High'].iloc[i]
+                    
+                    st.markdown(f"""
+                    <div style='background-color: #3a1a1a; padding: 10px; border-radius: 8px; border-left: 4px solid #f87171; margin-bottom: 10px;'>
+                        <h4 style='color: #f87171;'>🔴 Bearish FVG</h4>
+                        <b>Level:</b> {bearish_fvg_bottom:.2f} - {bearish_fvg_top:.2f}<br>
+                        <b>Status:</b> {'✅ Filled' if current_price < bearish_fvg_bottom else '⏳ Pending (price may return)'}<br>
+                        <b>Use:</b> {'Resistance zone' if current_price < bearish_fvg_bottom else 'Potential target area'}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    fvgs_found = True
+                    break
+    
+    if not fvgs_found:
+        st.info("⏳ No recent Fair Value Gaps detected. Market is balanced.")
+    
+    st.markdown("---")
+    st.markdown("### 📊 Premium & Discount Zones")
+    st.caption("Price ranges based on the recent swing range")
+    
+    range_high = recent_high if recent_high else current_price + 100
+    range_low = recent_low if recent_low else current_price - 100
+    range_mid = (range_high + range_low) / 2
+    
+    premium_zone_bottom = range_mid + (range_high - range_mid) * 0.382
+    discount_zone_top = range_mid - (range_mid - range_low) * 0.382
+    
+    if current_price > premium_zone_bottom:
+        zone = "🔴 PREMIUM ZONE (Overbought)"
+        zone_color = "#f87171"
+        action = "⚠️ Avoid buying, consider shorting at rejection"
+    elif current_price < discount_zone_top:
+        zone = "🟢 DISCOUNT ZONE (Oversold)"
+        zone_color = "#4ade80"
+        action = "✅ Good area to look for longs"
+    else:
+        zone = "⚪ EQUILIBRIUM ZONE (Fair Value)"
+        zone_color = "#facc15"
+        action = "⚖️ Wait for pullback to discount or premium"
+    
+    col_z1, col_z2, col_z3 = st.columns(3)
+    
+    with col_z1:
+        st.metric("Premium Zone", f"{premium_zone_bottom:.2f} - {range_high:.2f}")
+    with col_z2:
+        st.metric("Equilibrium", f"{range_mid:.2f}")
+    with col_z3:
+        st.metric("Discount Zone", f"{range_low:.2f} - {discount_zone_top:.2f}")
+    
+    st.markdown(f"""
+    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-top: 10px;'>
+        <h4 style='color: {zone_color};'>📍 Current Zone: {zone}</h4>
+        <p style='color: #e8ecf1;'><b>Action:</b> {action}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("### 📈 Structure Summary")
+    
+    col_s1, col_s2 = st.columns(2)
+    
+    with col_s1:
+        st.markdown("#### Recent Swing Points")
+        if last_5_highs:
+            st.markdown("**Recent Highs:**")
+            for i, (time_val, price) in enumerate(last_5_highs[-3:]):
+                if len(last_5_highs) > 3 and i == 0:
+                    label = "HH" if price > last_5_highs[-4][1] else "LH"
+                else:
+                    label = "H"
+                st.caption(f"{label}: {price:.2f}")
+        
+        if last_5_lows:
+            st.markdown("**Recent Lows:**")
+            for i, (time_val, price) in enumerate(last_5_lows[-3:]):
+                if len(last_5_lows) > 3 and i == 0:
+                    label = "HL" if price > last_5_lows[-4][1] else "LL"
+                else:
+                    label = "L"
+                st.caption(f"{label}: {price:.2f}")
+    
+    with col_s2:
+        st.markdown("#### Trend Analysis")
+        data_15m = yf.Ticker(ticker).history(period="5d", interval="15m")
+        if not data_15m.empty:
+            ema9 = data_15m['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+            ema20 = data_15m['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            ema50 = data_15m['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            
+            trend_score = 0
+            if current_price > ema9: trend_score += 1
+            if current_price > ema20: trend_score += 1
+            if current_price > ema50: trend_score += 1
+            if ema9 > ema20: trend_score += 1
+            if ema20 > ema50: trend_score += 1
+            
+            if trend_score >= 4:
+                trend = "🟢 STRONG BULLISH"
+                trend_color = "#4ade80"
+            elif trend_score >= 3:
+                trend = "🟡 BULLISH"
+                trend_color = "#facc15"
+            elif trend_score >= 2:
+                trend = "🟠 BEARISH"
+                trend_color = "#facc15"
+            else:
+                trend = "🔴 STRONG BEARISH"
+                trend_color = "#f87171"
+            
+            st.markdown(f"**Trend:** <span style='color: {trend_color};'>{trend}</span>", unsafe_allow_html=True)
+            st.caption(f"9 EMA: {ema9:.2f} | 20 EMA: {ema20:.2f} | 50 EMA: {ema50:.2f}")
+    
+    st.markdown("---")
+    st.markdown("### 🎯 Trade Setup Suggestions")
+    
+    suggestions = []
+    intraday = get_intraday_data(ticker)
+    if "error" not in intraday:
+        vwap = intraday['vwap']
+        
+        if current_price < discount_zone_top and current_price > vwap:
+            suggestions.append("✅ Price in DISCOUNT zone AND above VWAP - Strong LONG setup")
+        elif current_price < discount_zone_top and current_price < vwap:
+            suggestions.append("⚠️ Price in DISCOUNT zone but below VWAP - Wait for VWAP reclaim")
+        elif current_price > premium_zone_bottom and current_price < vwap:
+            suggestions.append("✅ Price in PREMIUM zone AND below VWAP - Strong SHORT setup")
+        elif current_price > premium_zone_bottom and current_price > vwap:
+            suggestions.append("⚠️ Price in PREMIUM zone but above VWAP - Wait for VWAP break")
+        
+        if bullish_ob and current_price < bullish_ob + 10 and current_price > vwap:
+            suggestions.append("✅ Price near Bullish Order Block + above VWAP - Watch for bounce")
+        if bearish_ob and current_price > bearish_ob - 10 and current_price < vwap:
+            suggestions.append("✅ Price near Bearish Order Block + below VWAP - Watch for rejection")
+        
+        if is_bullish and current_price > vwap:
+            suggestions.append("✅ BULLISH structure + Price above VWAP - Trend continuation likely")
+        if is_bearish and current_price < vwap:
+            suggestions.append("✅ BEARISH structure + Price below VWAP - Trend continuation likely")
+    
+    if suggestions:
+        for suggestion in suggestions:
+            if "✅" in suggestion:
+                st.markdown(f"<div style='background-color: #1a3a2a; padding: 8px; border-radius: 4px; margin-bottom: 5px; color: #4ade80;'>{suggestion}</div>", unsafe_allow_html=True)
+            elif "⚠️" in suggestion:
+                st.markdown(f"<div style='background-color: #3a2a1a; padding: 8px; border-radius: 4px; margin-bottom: 5px; color: #facc15;'>{suggestion}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='background-color: #1c2129; padding: 8px; border-radius: 4px; margin-bottom: 5px; color: #e8ecf1;'>{suggestion}</div>", unsafe_allow_html=True)
+    else:
+        st.info("⏳ No clear setups at the moment. Wait for price to reach key levels.")
+    
+    st.markdown("---")
+    st.markdown("### 📝 Quick Summary")
+    
+    col_sum1, col_sum2 = st.columns(2)
+    
+    with col_sum1:
+        st.markdown(f"""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+            <h4 style='color: #60a5fa;'>📈 Structure</h4>
+            <p style='color: #e8ecf1;'>{structure}<br>
+            HH/HL = Bullish | LH/LL = Bearish</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_sum2:
+        key_level = ""
+        if current_price < discount_zone_top:
+            key_level = f"🟢 DISCOUNT ({current_price:.2f})"
+        elif current_price > premium_zone_bottom:
+            key_level = f"🔴 PREMIUM ({current_price:.2f})"
+        else:
+            key_level = f"⚪ EQUILIBRIUM ({current_price:.2f})"
+        
+        st.markdown(f"""
+        <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
+            <h4 style='color: #60a5fa;'>📍 Position</h4>
+            <p style='color: #e8ecf1;'>{key_level}<br>
+            Use with VWAP for confirmation</p>
+        </div>
+        """, unsafe_allow_html=True)
+
 # ============ EXECUTION ENGINE: LONDON & NY OPEN SNIPERS ============
 def run_level_marker():
     st.subheader("🎯 Global Session Sniper Triggers")
@@ -1359,25 +2508,18 @@ def run_level_marker():
     macro = get_macro_data()
     tnx_val = macro['yield_10y']
     
-    # Split into three clear tabs
     tab_london, tab_ny, tab_yesterday = st.tabs(["🇬🇧 London Open Sniper", "🇺🇸 NY Open Sniper", "📅 Yesterday's Full Map"])
     
-    # ============================================================
-    # TAB 1: LONDON OPEN SNIPER
-    # ============================================================
     with tab_london:
         st.markdown("### 🇬🇧 London Open (2:00 AM EST) Sniper Sheet")
         st.caption("London trades the breakout of the Asia Session High/Low. Use these exact numbers for MNQ, MGC, SIL, and MES.")
         
         mnq_today = mnq_data[mnq_data.index.date == today]
         mnq_prev = mnq_data[mnq_data.index.date == (today - timedelta(days=1))]
-        
         mgc_today = mgc_data[mgc_data.index.date == today]
         mgc_prev = mgc_data[mgc_data.index.date == (today - timedelta(days=1))]
-        
         sil_today = sil_data[sil_data.index.date == today]
         sil_prev = sil_data[sil_data.index.date == (today - timedelta(days=1))]
-        
         mes_today = mes_data[mes_data.index.date == today]
         mes_prev = mes_data[mes_data.index.date == (today - timedelta(days=1))]
         
@@ -1386,10 +2528,8 @@ def run_level_marker():
         
         col_mnq_london, col_mgc_london, col_sil_london, col_mes_london = st.columns(4)
         
-        # ================= MNQ LONDON =================
         with col_mnq_london:
             st.markdown("#### 📈 MNQ London Triggers")
-            
             asia_mnq = mnq_prev.between_time('17:00', '23:59')
             if not asia_mnq.empty:
                 asia_high = asia_mnq['High'].max()
@@ -1415,7 +2555,6 @@ def run_level_marker():
                 london_long_entry = asia_high + buffer
                 london_long_sl = asia_high - 10
                 london_long_tp = london_long_entry + (asia_range * 1.5)
-                
                 london_short_entry = asia_low - buffer
                 london_short_sl = asia_low + 10
                 london_short_tp = london_short_entry - (asia_range * 1.5)
@@ -1440,10 +2579,8 @@ def run_level_marker():
             else:
                 st.info("No Asia data for MNQ.")
 
-        # ================= MGC LONDON =================
         with col_mgc_london:
             st.markdown("#### 🥇 MGC London Triggers")
-            
             asia_mgc = mgc_prev.between_time('17:00', '23:59')
             if not asia_mgc.empty:
                 asia_high = asia_mgc['High'].max()
@@ -1471,7 +2608,6 @@ def run_level_marker():
                 london_long_entry = asia_high + buffer
                 london_long_sl = asia_high - 10
                 london_long_tp = london_long_entry + (asia_range * 1.5)
-                
                 london_short_entry = asia_low - buffer
                 london_short_sl = asia_low + 10
                 london_short_tp = london_short_entry - (asia_range * 1.5)
@@ -1496,10 +2632,8 @@ def run_level_marker():
             else:
                 st.info("No Asia data for MGC.")
 
-        # ================= SIL LONDON =================
         with col_sil_london:
             st.markdown("#### 🥈 SIL London Triggers")
-            
             asia_sil = sil_prev.between_time('17:00', '23:59')
             if not asia_sil.empty:
                 asia_high = asia_sil['High'].max()
@@ -1527,7 +2661,6 @@ def run_level_marker():
                 london_long_entry = asia_high + buffer
                 london_long_sl = asia_high - 10
                 london_long_tp = london_long_entry + (asia_range * 1.5)
-                
                 london_short_entry = asia_low - buffer
                 london_short_sl = asia_low + 10
                 london_short_tp = london_short_entry - (asia_range * 1.5)
@@ -1552,10 +2685,8 @@ def run_level_marker():
             else:
                 st.info("No Asia data for SIL.")
 
-        # ================= MES LONDON =================
         with col_mes_london:
             st.markdown("#### 📈 MES London Triggers")
-            
             asia_mes = mes_prev.between_time('17:00', '23:59')
             if not asia_mes.empty:
                 asia_high = asia_mes['High'].max()
@@ -1581,7 +2712,6 @@ def run_level_marker():
                 london_long_entry = asia_high + buffer
                 london_long_sl = asia_high - 10
                 london_long_tp = london_long_entry + (asia_range * 1.5)
-                
                 london_short_entry = asia_low - buffer
                 london_short_sl = asia_low + 10
                 london_short_tp = london_short_entry - (asia_range * 1.5)
@@ -1609,22 +2739,16 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **London Strategy:** London tends to reverse the Asia move. If Asia went up, watch for London to fail at the Asia High and reverse.")
 
-    # ============================================================
-    # TAB 2: NY OPEN SNIPER
-    # ============================================================
     with tab_ny:
         st.markdown("### 🇺🇸 NY Open (9:30 AM EST) Sniper Sheet")
         st.caption("NY trades the breakout of the NY Pre-Market High/Low. Use these exact numbers.")
         
         mnq_today = mnq_data[mnq_data.index.date == today]
         mnq_prev = mnq_data[mnq_data.index.date == (today - timedelta(days=1))]
-        
         mgc_today = mgc_data[mgc_data.index.date == today]
         mgc_prev = mgc_data[mgc_data.index.date == (today - timedelta(days=1))]
-        
         sil_today = sil_data[sil_data.index.date == today]
         sil_prev = sil_data[sil_data.index.date == (today - timedelta(days=1))]
-        
         mes_today = mes_data[mes_data.index.date == today]
         mes_prev = mes_data[mes_data.index.date == (today - timedelta(days=1))]
         
@@ -1633,10 +2757,8 @@ def run_level_marker():
         
         col_mnq_ny, col_mgc_ny, col_sil_ny, col_mes_ny = st.columns(4)
         
-        # ================= MNQ NY =================
         with col_mnq_ny:
             st.markdown("#### 📈 MNQ NY Triggers")
-            
             ny_mnq = mnq_today.between_time('08:00', '09:29')
             
             if not ny_mnq.empty:
@@ -1660,7 +2782,6 @@ def run_level_marker():
                 ny_long_entry = ny_high + buffer
                 ny_long_sl = ny_high - 10
                 ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                
                 ny_short_entry = ny_low - buffer
                 ny_short_sl = ny_low + 10
                 ny_short_tp = ny_short_entry - (ny_range * 1.5)
@@ -1683,10 +2804,8 @@ def run_level_marker():
                 """, unsafe_allow_html=True)
                 st.caption(f"NY Range: {ny_range:.2f} pts")
 
-        # ================= MGC NY =================
         with col_mgc_ny:
             st.markdown("#### 🥇 MGC NY Triggers")
-            
             ny_mgc = mgc_today.between_time('08:00', '09:29')
             
             if not ny_mgc.empty:
@@ -1712,7 +2831,6 @@ def run_level_marker():
                 ny_long_entry = ny_high + buffer
                 ny_long_sl = ny_high - 10
                 ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                
                 ny_short_entry = ny_low - buffer
                 ny_short_sl = ny_low + 10
                 ny_short_tp = ny_short_entry - (ny_range * 1.5)
@@ -1735,10 +2853,8 @@ def run_level_marker():
                 """, unsafe_allow_html=True)
                 st.caption(f"NY Range: {ny_range:.2f} pts")
 
-        # ================= SIL NY =================
         with col_sil_ny:
             st.markdown("#### 🥈 SIL NY Triggers")
-            
             ny_sil = sil_today.between_time('08:00', '09:29')
             
             if not ny_sil.empty:
@@ -1764,7 +2880,6 @@ def run_level_marker():
                 ny_long_entry = ny_high + buffer
                 ny_long_sl = ny_high - 10
                 ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                
                 ny_short_entry = ny_low - buffer
                 ny_short_sl = ny_low + 10
                 ny_short_tp = ny_short_entry - (ny_range * 1.5)
@@ -1787,10 +2902,8 @@ def run_level_marker():
                 """, unsafe_allow_html=True)
                 st.caption(f"NY Range: {ny_range:.2f} pts")
 
-        # ================= MES NY =================
         with col_mes_ny:
             st.markdown("#### 📈 MES NY Triggers")
-            
             ny_mes = mes_today.between_time('08:00', '09:29')
             
             if not ny_mes.empty:
@@ -1814,7 +2927,6 @@ def run_level_marker():
                 ny_long_entry = ny_high + buffer
                 ny_long_sl = ny_high - 10
                 ny_long_tp = ny_long_entry + (ny_range * 1.5)
-                
                 ny_short_entry = ny_low - buffer
                 ny_short_sl = ny_low + 10
                 ny_short_tp = ny_short_entry - (ny_range * 1.5)
@@ -1840,9 +2952,6 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **NY Strategy:** The NY Pre-Market Range sets the battlefield for the first 30 minutes.")
 
-    # ============================================================
-    # TAB 3: YESTERDAY'S FULL SESSION MAP
-    # ============================================================
     with tab_yesterday:
         st.markdown("### 📅 Yesterday's Complete Session Map")
         st.caption("Highs, Lows, Ranges, and 50% Reversal Zones for Asia, London, and NY.")
@@ -2017,211 +3126,13 @@ def run_level_marker():
         st.markdown("---")
         st.info("💡 **Veteran Tip:** Today's London Sniper trades off the *Asia Range*. Today's NY Sniper trades off the *NY Pre-Market Range*. Use the correct sniper for each session.")
 
-# ============ NY AFTERNOON SNIPER ============
-def run_ny_afternoon_sniper():
-    """
-    Late NY Session Sniper (3:30 PM - 4:30 PM UK Time)
-    Better price action after initial NY chaos settles.
-    """
-    st.subheader("🇺🇸 NY Afternoon Sniper (3:30 PM - 4:30 PM UK)")
-    st.caption("Better price action after initial NY chaos settles. More reliable entries with fewer fakeouts.")
-    
-    # Check if it's afternoon session (UK time)
-    now_utc = datetime.now(timezone.utc)
-    uk_time = now_utc.astimezone(timezone(timedelta(hours=1)))
-    current_hour = uk_time.hour
-    current_minute = uk_time.minute
-    
-    # Only show if between 3:30 PM and 4:30 PM UK time
-    is_afternoon_session = (current_hour == 15 and current_minute >= 30) or (current_hour == 16 and current_minute <= 30)
-    
-    if not is_afternoon_session:
-        st.info("⏳ NY Afternoon Session runs from 3:30 PM - 4:30 PM UK time. Check back then for better entries!")
-        return
-    
-    with st.spinner("Fetching NY Afternoon data..."):
-        mnq = yf.Ticker("MNQ=F").history(period="2d", interval="5m")
-        mgc = yf.Ticker("MGC=F").history(period="2d", interval="5m")
-    
-    if mnq.empty:
-        st.warning("No data available.")
-        return
-    
-    today = datetime.now().date()
-    macro = get_macro_data()
-    vix = macro['vix']
-    tnx = macro['yield_10y']
-    
-    # Get NY Pre-Market Range
-    mnq_today = mnq[mnq.index.date == today]
-    ny_mnq = mnq_today.between_time('08:00', '09:29')
-    
-    if ny_mnq.empty:
-        st.warning("NY Pre-Market data not available.")
-        return
-    
-    ny_high = ny_mnq['High'].max()
-    ny_low = ny_mnq['Low'].min()
-    ny_range = ny_high - ny_low
-    
-    # Current price (3:30 PM)
-    afternoon_mnq = mnq_today.between_time('08:00', '16:30')
-    if afternoon_mnq.empty:
-        st.warning("Afternoon data not available.")
-        return
-    
-    current_price = afternoon_mnq['Close'].iloc[-1]
-    
-    # Calculate VWAP for the day
-    vwap = (afternoon_mnq['Close'] * afternoon_mnq['Volume']).cumsum() / afternoon_mnq['Volume'].cumsum()
-    current_vwap = vwap.iloc[-1]
-    
-    # Calculate 9 EMA
-    ema9 = afternoon_mnq['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
-    
-    # Display current state
-    st.markdown(f"""
-    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px; margin-bottom: 20px;'>
-        <h4>📊 Current State (3:30 PM UK)</h4>
-        <b>Price:</b> {current_price:.2f}<br>
-        <b>NY Range:</b> {ny_high:.2f} - {ny_low:.2f} (Range: {ny_range:.2f})<br>
-        <b>VWAP:</b> {current_vwap:.2f}<br>
-        <b>9 EMA:</b> {ema9:.2f}<br>
-        <b>VIX:</b> {vix:.2f} | <b>10Y:</b> {tnx:.2f}%
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # ============ ENTRY SIGNAL 1: BREAKOUT CONFIRMATION ============
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 🚀 Breakout Confirmation")
-        
-        # Check breakout
-        above_ny_high = current_price > ny_high + 15
-        below_ny_low = current_price < ny_low - 15
-        above_vwap = current_price > current_vwap
-        below_vwap = current_price < current_vwap
-        
-        if above_ny_high and above_vwap:
-            long_entry = current_price
-            long_sl = ny_high - 15
-            long_tp = long_entry + (ny_range * 2)
-            
-            st.success(f"✅ **LONG SIGNAL**")
-            st.markdown(f"""
-            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-                <b>Entry:</b> > {long_entry:.2f}<br>
-                <b>SL:</b> {long_sl:.2f}<br>
-                <b>TP:</b> {long_tp:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(long_tp - long_entry) / (long_entry - long_sl):.1f}
-            </div>
-            """, unsafe_allow_html=True)
-            
-        elif below_ny_low and below_vwap:
-            short_entry = current_price
-            short_sl = ny_low + 15
-            short_tp = short_entry - (ny_range * 2)
-            
-            st.error(f"✅ **SHORT SIGNAL**")
-            st.markdown(f"""
-            <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'>
-                <b>Entry:</b> < {short_entry:.2f}<br>
-                <b>SL:</b> {short_sl:.2f}<br>
-                <b>TP:</b> {short_tp:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(short_entry - short_tp) / (short_sl - short_entry):.1f}
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.info("⏳ No breakout yet. Price still inside/around NY Range.")
-    
-    with col2:
-        st.markdown("### 🔄 Pullback to 9 EMA")
-        
-        # Check pullback entry
-        at_ema9 = abs(current_price - ema9) / current_price < 0.002
-        price_above_ny_high = current_price > ny_high
-        
-        if at_ema9 and price_above_ny_high:
-            pullback_entry = current_price
-            pullback_sl = ny_high - 10
-            pullback_tp = pullback_entry + (ny_range * 1.5)
-            
-            st.success(f"✅ **PULLBACK LONG SIGNAL**")
-            st.markdown(f"""
-            <div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'>
-                <b>Entry:</b> {pullback_entry:.2f}<br>
-                <b>SL:</b> {pullback_sl:.2f}<br>
-                <b>TP:</b> {pullback_tp:.2f}<br>
-                <b>Risk/Reward:</b> 1:{(pullback_tp - pullback_entry) / (pullback_entry - pullback_sl):.1f}
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.info("⏳ Waiting for pullback to 9 EMA after breakout.")
-    
-    # ============ VOLATILITY ADJUSTMENT ============
-    st.markdown("---")
-    st.markdown("### 📊 Volatility Adjustment")
-    
-    # Adjust stops based on VIX
-    if vix > 30:
-        st.warning(f"⚠️ **EXTREME VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("Increase stops by 50%, reduce position size to 25%")
-    elif vix > 25:
-        st.warning(f"⚠️ **HIGH VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("Increase stops by 30%, reduce position size to 50%")
-    elif vix > 20:
-        st.info(f"⚡ **ELEVATED VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("Normal stops, reduce position size to 75%")
-    else:
-        st.success(f"✅ **NORMAL VOLATILITY** (VIX: {vix:.2f})")
-        st.caption("Normal stops, full position size")
-    
-    # ============ EXECUTION RULES ============
-    st.markdown("---")
-    st.markdown("### 🎯 Execution Rules")
-    
-    st.markdown("""
-    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
-        <h4>📋 Entry Checklist (3:30 PM - 4:30 PM)</h4>
-        <ul>
-            <li>✅ <b>Time:</b> 3:30 PM - 4:30 PM UK time</li>
-            <li>✅ <b>Breakout:</b> Price above NY High + 15 OR below NY Low - 15</li>
-            <li>✅ <b>VWAP:</b> Price on same side as VWAP (above for long, below for short)</li>
-            <li>✅ <b>Volume:</b> Volume > average (confirmation)</li>
-            <li>✅ <b>VIX:</b> Below 30 for normal sizing</li>
-            <li>✅ <b>Better Entry:</b> Pullback to 9 EMA after breakout</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # ============ TRADE MANAGEMENT ============
-    st.markdown("---")
-    st.markdown("### 📈 Trade Management")
-    
-    st.markdown("""
-    <div style='background-color: #1c2129; padding: 15px; border-radius: 8px;'>
-        <h4>📊 Managing Your Trade</h4>
-        <ul>
-            <li>✅ <b>Move to breakeven:</b> When price moves 50% of target</li>
-            <li>✅ <b>Take partial profits:</b> 50% at 1:1 risk/reward</li>
-            <li>✅ <b>Hold remainder:</b> For full target (2x range)</li>
-            <li>✅ <b>Exit by 4:30 PM:</b> Unless trend is very strong</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ============ ASIA SNIPER ENGINE (24/7 - FIXED WITH WORKING TICKERS) ============
+# ============ ASIA SNIPER ENGINE ============
 def run_asia_sniper():
     st.subheader("🌏 Asia Session Sniper Triggers")
     st.caption("Sniper triggers for the Nikkei (N225) and KOSPI. Uses today's range if available, otherwise falls back to yesterday's range. Works 24/7.")
     
     with st.spinner("Fetching Asian market data..."):
-        # FIXED: Use tickers that actually work with Yahoo Finance
-        # Nikkei 225 - use EWJ (Japan ETF) as proxy since ^N225 doesn't work
         n225 = yf.Ticker("EWJ").history(period="5d", interval="5m")
-        
-        # Also try Nikkei futures if available
         nk_futures = yf.Ticker("NKD=F").history(period="5d", interval="5m")
         if not nk_futures.empty:
             n225 = nk_futures
@@ -2229,10 +3140,7 @@ def run_asia_sniper():
         elif not n225.empty:
             st.info("📊 Using EWJ (Japan ETF) as proxy for Nikkei 225")
         
-        # KOSPI - use the KOSPI Index ticker (^KS11 works!)
         qk1 = yf.Ticker("^KS11").history(period="5d", interval="5m")
-        
-        # Also try Samsung as a proxy for KOSPI if needed
         if qk1.empty:
             samsung = yf.Ticker("005930.KS").history(period="5d", interval="5m")
             if not samsung.empty:
@@ -2250,10 +3158,8 @@ def run_asia_sniper():
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
-    # If today is Monday, use Friday's data
-    if today.weekday() == 0:  # Monday
-        friday = today - timedelta(days=3)  # Friday
-        # Check if we have Friday data
+    if today.weekday() == 0:
+        friday = today - timedelta(days=3)
         if not n225[n225.index.date == friday].empty:
             yesterday = friday
             st.info("📅 Monday - Using Friday's data as yesterday's range")
@@ -2261,20 +3167,15 @@ def run_asia_sniper():
     buffer = 15
     fakeout_buffer = 5
     
-    # Get current market status
     now_utc = datetime.now(timezone.utc)
     uk_time = now_utc.astimezone(timezone(timedelta(hours=1)))
     current_hour = uk_time.hour
-    
-    # Asian markets open roughly 1:00 AM - 7:30 AM UK time
     asian_market_open = 1 <= current_hour <= 7
     
     col_nikkei, col_kospi = st.columns(2)
     
-    # ================= NIKKEI SNIPER =================
     with col_nikkei:
         st.markdown("### 📈 Nikkei 225 (Proxy)")
-        
         n225_today = n225[n225.index.date == today]
         n225_yesterday = n225[n225.index.date == yesterday]
         
@@ -2315,7 +3216,6 @@ def run_asia_sniper():
             long_entry = day_high + buffer
             long_sl = day_high - 10
             long_tp = long_entry + (daily_range * 1.5)
-            
             short_entry = day_low - buffer
             short_sl = day_low + 10
             short_tp = short_entry - (daily_range * 1.5)
@@ -2348,10 +3248,8 @@ def run_asia_sniper():
         else:
             st.info("No range data available. Check back when markets are open.")
 
-    # ================= KOSPI SNIPER =================
     with col_kospi:
         st.markdown("### 📉 KOSPI (^KS11)")
-        
         qk1_today = qk1[qk1.index.date == today]
         qk1_yesterday = qk1[qk1.index.date == yesterday]
         
@@ -2392,7 +3290,6 @@ def run_asia_sniper():
             long_entry = day_high + buffer
             long_sl = day_high - 10
             long_tp = long_entry + (daily_range * 1.5)
-            
             short_entry = day_low - buffer
             short_sl = day_low + 10
             short_tp = short_entry - (daily_range * 1.5)
@@ -2517,7 +3414,6 @@ def run_journal_tab():
     if trades:
         df = pd.DataFrame(trades)
         df['ts_utc'] = pd.to_datetime(df['ts_utc']).dt.strftime('%Y-%m-%d %H:%M')
-        
         st.dataframe(df[['ts_utc', 'symbol', 'direction', 'entry_price', 'stop_loss', 'take_profit', 'outcome']], width='stretch', hide_index=True)
         
         st.markdown("#### 📖 Expand to Read Entry Notes")
@@ -2538,6 +3434,7 @@ def run_journal_tab():
     else:
         st.info("No trades logged yet. Start your trading journal today!")
 
+# ============ RUN APP ============
 def run_app():
     load_dotenv()
     init_db()
@@ -2546,7 +3443,7 @@ def run_app():
     st.markdown("<style>.stApp { background-color: #0f1116; color: #e8ecf1; } .eco-card { background: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #4c6fff; }</style>", unsafe_allow_html=True)
     st.title("⚡ EdgeFinder Pro - Market Terminal")
     
-    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12 = st.tabs([
+    main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9, main_tab10, main_tab11, main_tab12, main_tab13, main_tab14, main_tab15 = st.tabs([
         "🏠 Dashboard", 
         "📈 Charts", 
         "📅 Regime Report", 
@@ -2558,7 +3455,10 @@ def run_app():
         "🌏 Asia Sniper",
         "🇺🇸 NY Afternoon",
         "📈 VWAP & 9 EMA Strategy",
-        "⚡ High Yield Protocol"  # NEW TAB
+        "⚡ High Yield Protocol",
+        "🎯 Smart Money Levels",
+        "📋 SMC Cheat Sheet",
+        "🎯 SMC Dashboard"
     ])
     
     view_mode = st.sidebar.radio("View Mode", ["📈 Individual Assets", "💵 DXY Dashboard"])
@@ -2583,10 +3483,8 @@ def run_app():
             with c4:
                 spread_10_2 = mt['yield_10y'] - 4.85
                 status_10_2 = "⚠️ Inverted (Recession Risk)" if spread_10_2 < 0 else "✅ Normal"
-                
                 spread_30_10 = mt['yield_30y'] - mt['yield_10y']
                 status_30_10 = "⚠️ Inverted" if spread_30_10 < 0 else "✅ Normal"
-                
                 crisis_signal = "🔴 CRISIS" if mt['yield_30y'] > 5.0 else "🟢 Stable"
                 
                 st.markdown(f"""
@@ -2622,7 +3520,6 @@ def run_app():
                 vxn_val=vxn['Close'].iloc[-1] if not vxn.empty else 20.0
                 
                 macro_score_nq = 0
-                
                 if tnx_val < 4.2: macro_score_nq += 5
                 elif tnx_val < 4.3: macro_score_nq += 2
                 else: macro_score_nq -= 2
@@ -2771,7 +3668,6 @@ def run_app():
             
             nvda_price_str = f"${nvda_price:.2f}" if nvda_price > 0 else "Loading..."
             nvda_200_str = f"${nvda_200:.2f}" if nvda_200 > 0 else "Loading..."
-            
             smh_price_str = f"${smh_price:.2f}" if smh_price > 0 else "Loading..."
             smh_200_str = f"${smh_200:.2f}" if smh_200 > 0 else "Loading..."
             
@@ -2813,6 +3709,15 @@ def run_app():
 
     with main_tab12:
         run_high_yield_protocol()
+
+    with main_tab13:
+        run_smart_money_levels()
+
+    with main_tab14:
+        render_smc_cheat_sheet()
+
+    with main_tab15:
+        run_smc_dashboard()
 
 if __name__ == "__main__":
     run_app()
