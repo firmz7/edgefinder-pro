@@ -48,7 +48,6 @@ RSS_FEEDS=["https://feeds.reuters.com/reuters/businessNews","https://feeds.reute
 POSITIVE_TERMS={"surge","beats","beat","rally","gain","gains","jump","bullish","strong","cooling inflation","rate cut","soft landing","upgrade","record high","rebound","outperform"}
 NEGATIVE_TERMS={"drop","falls","fall","misses","miss","selloff","bearish","weak","hot inflation","rate hike","downgrade","recession","warning","tariffs","war","outflows"}
 
-# ============ ASSET-SPECIFIC VOLATILITY PROFILES ============
 ASSET_VOLATILITY_PROFILES = {
     "MNQ=F":  {"trending_min": 40,  "ranging_max": 25,  "name": "MNQ (Nasdaq)",   "typical_range": "40-80"},
     "M2K=F":  {"trending_min": 20,  "ranging_max": 12,  "name": "M2K (Russell)",  "typical_range": "15-30"},
@@ -57,69 +56,126 @@ ASSET_VOLATILITY_PROFILES = {
     "MGC=F":  {"trending_min": 15,  "ranging_max": 8,   "name": "MGC (Gold)",     "typical_range": "8-20"},
 }
 
-# ============ PER-ASSET STOP BUFFERS (points) ============
-STOP_BUFFERS = {
-    "MNQ": 5,
-    "M2K": 3,
-    "US30": 20,
-    "MGC": 2,
-    "MES": 5,
-}
+STOP_BUFFERS = {"MNQ": 5, "M2K": 3, "US30": 20, "MGC": 2, "MES": 5}
+MIN_NY_RANGE = {"MNQ": 10, "M2K": 5, "US30": 40, "MGC": 4, "MES": 8}
+TICK_VALUES = {"MNQ": 2.0, "M2K": 5.0, "US30": 0.5, "MGC": 10.0, "MES": 5.0}
 
-# ============ MINIMUM NY RANGE (points) — below this, signals are unreliable ============
-MIN_NY_RANGE = {
-    "MNQ": 10,
-    "M2K": 5,
-    "US30": 40,
-    "MGC": 4,
-    "MES": 8,
+SESSIONS = {
+    "LONDON":    {"start": "07:30", "end": "08:30", "size": 0.75, "rating": 4, "name": "🌅 London"},
+    "NY_OPEN":   {"start": "14:45", "end": "16:00", "size": 1.00, "rating": 5, "name": "🌆 NY Open"},
+    "AFTERNOON": {"start": "19:00", "end": "20:00", "size": 0.50, "rating": 3, "name": "🌃 Afternoon"},
 }
+BLACKOUTS = [
+    ("14:30", "14:45", "NY open chaos"),
+    ("16:00", "19:00", "Mid-day lull"),
+    ("20:00", "23:59", "Overnight"),
+    ("00:00", "07:30", "Overnight"),
+]
 
-# ============ TICK VALUES ($ per point per contract) ============
-TICK_VALUES = {
-    "MNQ": 2.0,
-    "M2K": 5.0,
-    "US30": 0.5,
-    "MGC": 10.0,
-    "MES": 5.0,
-}
+def parse_time_hm(tstr):
+    h, m = tstr.split(":"); return int(h) * 60 + int(m)
+
+def get_current_session(now_uk):
+    now_min = now_uk.hour * 60 + now_uk.minute
+    for key, sess in SESSIONS.items():
+        s = parse_time_hm(sess["start"]); e = parse_time_hm(sess["end"])
+        if s <= now_min <= e:
+            remaining = (e - now_min) * 60 - now_uk.second
+            next_key, next_delta = _next_session_after(now_min)
+            return key, sess, remaining, next_key, next_delta
+    next_key, next_delta = _next_session_after(now_min)
+    return None, None, 0, next_key, next_delta
+
+def _next_session_after(now_min):
+    best_key, best_delta = None, 999999
+    for key, sess in SESSIONS.items():
+        s = parse_time_hm(sess["start"])
+        delta = s - now_min
+        if delta < 0: delta += 24 * 60
+        if delta < best_delta:
+            best_delta = delta; best_key = key
+    return best_key, best_delta * 60
+
+def is_blackout(now_uk):
+    now_min = now_uk.hour * 60 + now_uk.minute
+    for start, end, reason in BLACKOUTS:
+        s = parse_time_hm(start); e = parse_time_hm(end)
+        if s <= e:
+            if s <= now_min <= e: return True, reason
+        else:
+            if now_min >= s or now_min <= e: return True, reason
+    return False, None
+
+def fmt_countdown(secs):
+    if secs < 0: secs = 0
+    h = secs // 3600; m = (secs % 3600) // 60
+    if h > 0: return f"{h}h {m}m"
+    return f"{m}m"
+
+def get_yield_regime(tnx):
+    if tnx < 3.5:
+        return ("EASY", "🟢 EASY MONEY", 1.00, 1.0, ["MNQ", "MES", "M2K", "US30", "MGC"], "Full size allowed")
+    if tnx < 4.0:
+        return ("NEUTRAL", "🟢 NEUTRAL", 1.00, 1.0, ["MNQ", "MES", "M2K", "US30", "MGC"], "Normal size")
+    if tnx < 4.5:
+        return ("TIGHT", "🟡 TIGHT MONEY", 0.75, 0.85, ["US30", "MES", "MNQ", "MGC", "M2K"], "Reduced size (75%)")
+    if tnx < 5.0:
+        return ("VERY_TIGHT", "🔴 VERY TIGHT", 0.50, 0.70, ["US30", "MES", "MGC"], "50% size — prefer US30/MES")
+    return ("CRISIS", "🚨 CRISIS", 0.25, 0.50, ["US30", "MGC"], "25% size — best setups only")
 
 def safe_stop(entry: float, direction: str, anchor_level: float, asset: str) -> float:
-    """
-    Returns a stop-loss that is ALWAYS on the correct side of entry.
-    direction: 'LONG' or 'SHORT'
-    anchor_level: the level we WANT the stop to be near (e.g. ny_high, swing_low)
-    asset: symbol key like 'MNQ', 'US30', etc.
-    """
     buf = STOP_BUFFERS.get(asset, 5)
-    if direction == "SHORT":
-        return max(anchor_level + buf, entry + buf)
-    elif direction == "LONG":
-        return min(anchor_level - buf, entry - buf)
-    return entry
+    if direction == "SHORT": return max(anchor_level + buf, entry + buf)
+    if direction == "LONG":  return min(anchor_level - buf, entry - buf)
+    return entry + buf if direction in ("SHORT", "short") else entry - buf
 
 def clamp_rr(rr: float, max_rr: float = 10.0) -> float:
-    if rr <= 0 or not math.isfinite(rr):
-        return 0.0
+    if rr <= 0 or not math.isfinite(rr): return 0.0
     return min(rr, max_rr)
+
+def calc_atr(df, period=14):
+    if len(df) < period + 1: return 0.0
+    high = df['High']; low = df['Low']; close = df['Close']
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(period).mean().iloc[-1]
+
+def calc_adx(df, period=14):
+    if len(df) < period * 2: return 0.0, 0.0, 0.0
+    high = df['High']; low = df['Low']; close = df['Close']
+    tr1 = high - low; tr2 = abs(high - close.shift(1)); tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    up_move = high - high.shift(1); down_move = low.shift(1) - low
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0), index=df.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0), index=df.index)
+    atr = tr.rolling(period).mean()
+    plus_di = 100 * (plus_dm.rolling(period).mean() / atr.replace(0, np.nan))
+    minus_di = 100 * (minus_dm.rolling(period).mean() / atr.replace(0, np.nan))
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.rolling(period).mean()
+    pdi = plus_di.iloc[-1] if not plus_di.empty else 0
+    mdi = minus_di.iloc[-1] if not minus_di.empty else 0
+    a = adx.iloc[-1] if not adx.empty else 0
+    if pd.isna(a): a = 0.0
+    if pd.isna(pdi): pdi = 0.0
+    if pd.isna(mdi): mdi = 0.0
+    return float(a), float(pdi), float(mdi)
 
 class TreasuryIntervention:
     YIELD_CAP_10Y = 4.75
     YIELD_CAP_30Y = 5.25
     BUYBACK_START = datetime(2026, 9, 9)
     BUYBACK_END = datetime(2026, 11, 4)
-    
     @staticmethod
     def get_buyback_status():
         now = datetime.now()
-        if TreasuryIntervention.BUYBACK_START <= now <= TreasuryIntervention.BUYBACK_END:
-            return "ACTIVE", "🟢"
+        if TreasuryIntervention.BUYBACK_START <= now <= TreasuryIntervention.BUYBACK_END: return "ACTIVE", "🟢"
         elif now < TreasuryIntervention.BUYBACK_START:
             days = (TreasuryIntervention.BUYBACK_START - now).days
             return f"STARTS IN {days} DAYS", "🟡"
-        else:
-            return "COMPLETED", "⚪"
-    
+        return "COMPLETED", "⚪"
     @staticmethod
     def calculate_yield_stress(ten_year, thirty_year):
         stress_10y = max(0, (ten_year / TreasuryIntervention.YIELD_CAP_10Y - 1) * 100)
@@ -149,15 +205,14 @@ def get_economic_calendar()->List[Dict]:
                 try:
                     event_date = datetime.fromisoformat(item.get("date", "").replace("Z", "+00:00"))
                     if event_date > now:
-                        d = event_date - now
-                        days = d.days; h, r = divmod(d.seconds, 3600); m, _ = divmod(r, 60)
+                        d = event_date - now; days = d.days
+                        h, r = divmod(d.seconds, 3600); m, _ = divmod(r, 60)
                         c = f"{days}d {h}h {m}m" if days > 0 else f"{h}h {m}m"
                         upcoming.append({"name": f"🇺🇸 {item.get('title', '').replace('**', '')}", "countdown": c})
                 except Exception: continue
             return upcoming[:3]
         return get_economic_calendar_fallback()
-    except Exception:
-        return get_economic_calendar_fallback()
+    except Exception: return get_economic_calendar_fallback()
 
 def get_economic_calendar_fallback()->List[Dict]:
     now = datetime.now(timezone.utc)
@@ -169,8 +224,8 @@ def get_economic_calendar_fallback()->List[Dict]:
     upcoming = []
     for e in events:
         if e["date"] > now:
-            d = e["date"] - now
-            days = d.days; h, r = divmod(d.seconds, 3600); m, _ = divmod(r, 60)
+            d = e["date"] - now; days = d.days
+            h, r = divmod(d.seconds, 3600); m, _ = divmod(r, 60)
             c = f"{days}d {h}h {m}m" if days > 0 else f"{h}h {m}m"
             upcoming.append({"name": e["name"], "countdown": c})
     return upcoming[:3]
@@ -192,19 +247,15 @@ def calc_fear_greed(vix,pcr,dxy)->Dict:
 
 def get_intraday_data(ticker)->Dict:
     try:
-        d = yf.Ticker(ticker).history(period="5d", interval="1d")
-        ph = d["High"].iloc[-2] if len(d) > 1 else d["Close"].iloc[-1]
-        pl = d["Low"].iloc[-2] if len(d) > 1 else d["Close"].iloc[-1]
         h5 = yf.Ticker(ticker).history(period="1d", interval="5m")
-        if h5.empty: return {"error": "No intraday data available (Market might be closed)"}
+        if h5.empty: return {"error": "No intraday data available"}
         h1 = yf.Ticker(ticker).history(period="1d", interval="1m")
         h1['EMA_9'] = h1['Close'].ewm(span=9, adjust=False).mean()
         h1['EMA_20'] = h1['Close'].ewm(span=20, adjust=False).mean()
         h1['EMA_50'] = h1['Close'].ewm(span=50, adjust=False).mean()
         h1['VWAP'] = (h1['Close'] * h1['Volume']).cumsum() / h1['Volume'].cumsum()
-        return {"current_price": h1['Close'].iloc[-1], "hist_1m": h1, "hist_5m": h5, "vwap": h1['VWAP'].iloc[-1], "ema9": h1['EMA_9'].iloc[-1], "ema20": h1['EMA_20'].iloc[-1], "ema50": h1['EMA_50'].iloc[-1], "prev_high": ph, "prev_low": pl, "source": "Yahoo"}
-    except Exception as e:
-        return {"error": str(e)}
+        return {"current_price": h1['Close'].iloc[-1], "hist_1m": h1, "hist_5m": h5, "vwap": h1['VWAP'].iloc[-1], "ema9": h1['EMA_9'].iloc[-1], "ema20": h1['EMA_20'].iloc[-1], "ema50": h1['EMA_50'].iloc[-1]}
+    except Exception as e: return {"error": str(e)}
 
 def get_macro_data()->Dict:
     try:
@@ -225,23 +276,14 @@ def get_macro_data()->Dict:
         tyx = tyx_data['Close'].iloc[-1] if not tyx_data.empty else 4.50
     except: tyx = 4.50
     try:
-        kr10y_data = yf.Ticker("^KR10YT=RR").history(period="1d", interval="1m")
-        kr10y = kr10y_data['Close'].iloc[-1] if not kr10y_data.empty else 3.50
-    except: kr10y = 3.50
-    try:
-        jp10y_data = yf.Ticker("^JGB10Y").history(period="1d", interval="1m")
-        jp10y = jp10y_data['Close'].iloc[-1] if not jp10y_data.empty else 1.00
-    except: jp10y = 1.00
-    try:
-        jp30y_data = yf.Ticker("^JGB30Y").history(period="1d", interval="1m")
-        jp30y = jp30y_data['Close'].iloc[-1] if not jp30y_data.empty else 2.00
-    except: jp30y = 2.00
+        tnx_prev = yf.Ticker("^TNX").history(period="2d", interval="1d")
+        tnx_change = (tnx_prev['Close'].iloc[-1] - tnx_prev['Close'].iloc[-2]) if len(tnx_prev) >= 2 else 0
+    except: tnx_change = 0
     buyback_status, buyback_icon = TreasuryIntervention.get_buyback_status()
     stress_10y, stress_30y = TreasuryIntervention.calculate_yield_stress(tnx, tyx)
     return {"dxy": dxy, "vix": vix, "real_yield_10y": ry, "yield_10y": tnx, "yield_30y": tyx,
-            "kr10y": kr10y, "jp10y": jp10y, "jp30y": jp30y, "buyback_status": buyback_status,
-            "buyback_icon": buyback_icon, "yield_stress_10y": stress_10y, "yield_stress_30y": stress_30y,
-            "yield_cap_10y": TreasuryIntervention.YIELD_CAP_10Y, "yield_cap_30y": TreasuryIntervention.YIELD_CAP_30Y}
+            "yield_10y_change": tnx_change, "buyback_status": buyback_status, "buyback_icon": buyback_icon,
+            "yield_stress_10y": stress_10y, "yield_stress_30y": stress_30y}
 
 def _clean(t): return re.sub(r"\s+"," ",t.strip().lower())
 def _headline_score(t):
@@ -275,55 +317,6 @@ class IndicatorReading: name:str; value:float; score:int; bias:Bias; note:str=""
 @dataclass
 class AssetSnapshot: symbol:str; name:str; price:float; technical_score:int; macro_score:int; news_score:int; overall_score:int; overall_bias:Bias; technical_details:List[IndicatorReading]=field(default_factory=list); macro_details:List[IndicatorReading]=field(default_factory=list); news_details:List[IndicatorReading]=field(default_factory=list)
 
-def score_dxy_technical(price,ma50,ma200,rsi)->int:
- if price>ma50 and price>ma200: t=9
- elif price>ma200: t=7
- elif price>ma50: t=5
- else: t=3
- rs=8 if rsi<30 else 3 if rsi>70 else 5
- return int((t+rs)/2)
-
-def score_dxy_macro(real_yield,vix)->int:
- y=9 if real_yield>2.5 else 7 if real_yield>2.0 else 5 if real_yield>1.5 else 3
- v=9 if vix>30 else 7 if vix>20 else 5
- return int((y+v)/2)
-
-def get_macro_drivers(asset_key)->List[Dict]:
-    d=[]
-    try:
-        dxy_data = yf.Ticker("DX-Y.NYB").history(period="1d", interval="1m")
-        dxy = dxy_data['Close'].iloc[-1] if not dxy_data.empty else 102.0
-    except: dxy = 102.0
-    try:
-        vix_data = yf.Ticker("^VIX").history(period="1d", interval="1m")
-        vix = vix_data['Close'].iloc[-1] if not vix_data.empty else 18.0
-    except: vix = 18.0
-    ry = float(os.getenv("EDGEFINDER_REAL_YIELD_FALLBACK", "1.8"))
-    if asset_key in ["SPY","NDX","QQQ","MNQ","MES","NVDA","TSLA","META","AMZN","SMH","PLTR","NOW"]:
-        d.append({"category":"Growth & Risk","metric":"DXY","bias":"Bearish" if dxy>104 else "Bullish","actual":f"{dxy:.2f}","forecast":"103.50","surprise":f"{dxy-103.50:.2f}","interpretation":"Strong dollar weighs on exports."})
-        d.append({"category":"Growth & Risk","metric":"VIX","bias":"Bearish" if vix>20 else "Bullish","actual":f"{vix:.2f}","forecast":"18.50","surprise":f"{vix-18.50:.2f}","interpretation":"Low VIX = Risk-on."})
-        d.append({"category":"Monetary Policy","metric":"10Y Real Yield","bias":"Bearish" if ry>2.0 else "Bullish","actual":f"{ry:.2f}%","forecast":"2.10%","surprise":f"{ry-2.10:.2f}%","interpretation":"High yields steal liquidity."})
-    elif asset_key=="MGC" or asset_key=="GOLD":
-        d.append({"category":"Macro Drivers","metric":"DXY","bias":"Bullish" if dxy<104 else "Bearish","actual":f"{dxy:.2f}","forecast":"103.50","surprise":f"{dxy-103.50:.2f}","interpretation":"Inverse correlation."})
-        d.append({"category":"Macro Drivers","metric":"10Y Real Yield","bias":"Bullish" if ry<1.8 else "Bearish","actual":f"{ry:.2f}%","forecast":"2.00%","surprise":f"{ry-2.00:.2f}%","interpretation":"Gold thrives on falling yields."})
-        d.append({"category":"Geopolitics","metric":"VIX","bias":"Bullish" if vix>20 else "Neutral","actual":f"{vix:.2f}","forecast":"18.50","surprise":f"{vix-18.50:.2f}","interpretation":"Safe haven flows."})
-    return d
-
-def render_macro_drivers(drivers):
- st.markdown("### 📊 Macro & Fundamental Drivers")
- for driver in drivers:
-  bc="background-color: #1a3a2a; color: #4ade80;" if "Bullish" in driver["bias"] else "background-color: #3a1a1a; color: #f87171;"
-  with st.container():
-   c=st.columns([2,1,1.5,1.5,1.5,2])
-   with c[0]: st.caption(driver["category"]); st.markdown(f"**{driver['metric']}**")
-   with c[1]: st.markdown(f"<div style='{bc}; text-align: center; padding: 4px 8px; border-radius: 6px; font-weight: bold;'>{driver['bias']}</div>", unsafe_allow_html=True)
-   with c[2]: st.markdown(f"<div style='text-align: center;'><b>{driver['actual']}</b></div>", unsafe_allow_html=True)
-   with c[3]: st.markdown(f"<div style='text-align: center;'>{driver['forecast']}</div>", unsafe_allow_html=True)
-   with c[4]:
-    val=float(driver["surprise"].replace("%","")); color="#4ade80" if val>=0 else "#f87171"
-    st.markdown(f"<div style='text-align: center; color: {color}; font-weight: bold;'>{driver['surprise']}</div>", unsafe_allow_html=True)
-   with c[5]: st.caption(driver["interpretation"]); st.markdown("---")
-
 def calc_rsi(closes)->float:
  if len(closes)<15: return 50.0
  g=[max(closes[i]-closes[i-1],0) for i in range(1,15)]; l=[abs(min(closes[i]-closes[i-1],0)) for i in range(1,15)]
@@ -334,54 +327,6 @@ def calc_rsi(closes)->float:
 def sma(values,p)->float:
  if len(values)<p: return sum(values)/len(values)
  return sum(values[-p:])/p
-
-def render_dxy_dashboard():
- st.subheader("💵 US Dollar Index (DXY) - Macro & Technical Analysis")
- ticker="DX-Y.NYB"; intraday=get_intraday_data(ticker); macro=get_macro_data()
- try:
-     daily=yf.Ticker(ticker).history(period="6mo")
-     closes=daily['Close'].tolist(); price=closes[-1]
-     rsi=calc_rsi(closes); ma50=sma(closes,50); ma200=sma(closes,200)
-     ts=score_dxy_technical(price,ma50,ma200,rsi); ms=score_dxy_macro(macro["real_yield_10y"],macro["vix"])
-     os=int((ts*0.5)+(ms*0.5))
-     c1,c2,c3,c4=st.columns(4); c1.metric("Current Price",f"{price:.2f}"); c2.metric("DXY Overall Score",f"{os}/10",score_to_bias(os).value); c3.metric("Technical Score",f"{ts}/10"); c4.metric("Macro Score",f"{ms}/10")
- except Exception as e:
-     st.warning(f"DXY data unavailable: {e}")
- st.markdown("---"); drivers=get_macro_drivers("DXY"); render_macro_drivers(drivers)
-
-def render_asset(asset_key, auto_save):
-    cfg = ASSETS[asset_key]
-    intraday = get_intraday_data(cfg["ticker"])
-    macro = get_macro_data()
-    news = get_news_data(cfg["name"], cfg["news_queries"])
-    snapshot = build_swing_snapshot(cfg, macro, news)
-    if auto_save: save_snapshot(snapshot)
-    try:
-        cpi = yf.Ticker("^CPI").history(period="1mo"); cpi_val = cpi['Close'].iloc[-1] if not cpi.empty else 3.2
-        nfp = yf.Ticker("^NFP").history(period="1mo"); nfp_val = nfp['Close'].iloc[-1] if not nfp.empty else 150
-        unemp = yf.Ticker("UNRATE").history(period="1mo"); unemp_val = unemp['Close'].iloc[-1] if not unemp.empty else 4.0
-    except: cpi_val, nfp_val, unemp_val = 3.2, 150, 4.0
-    st.markdown(f"""
-    <div style='display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2a2a; padding-bottom: 15px; margin-bottom: 20px;'>
-        <div><h2 style='margin: 0; color: #e8ecf1;'>{snapshot.name}</h2><span style='color: #a0aec0; font-size: 14px;'>{snapshot.symbol}</span></div>
-        <div><span style='background-color: {"#1a3a2a" if "Bullish" in snapshot.overall_bias.value else "#3a1a1a" if "Bearish" in snapshot.overall_bias.value else "#2a2a1a"}; color: {"#4ade80" if "Bullish" in snapshot.overall_bias.value else "#f87171" if "Bearish" in snapshot.overall_bias.value else "#facc15"}; padding: 5px 15px; border-radius: 20px; font-weight: bold;'>{snapshot.overall_bias.value}</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.markdown("### 📊 Asset Scorecard")
-        st.metric("Price", f"${snapshot.price:,.2f}")
-        st.markdown("#### Breakdown")
-        c_s1, c_s2, c_s3 = st.columns(3)
-        c_s1.metric("Technical", f"{snapshot.technical_score}/10")
-        c_s2.metric("Macro", f"{snapshot.macro_score}/10")
-        c_s3.metric("News", f"{snapshot.news_score}/10")
-    with c2:
-        st.markdown("### 🔍 Macro & Technical Drivers")
-        tech_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.technical_details])
-        st.dataframe(tech_df, width='stretch', hide_index=True, use_container_width=True)
-        macro_df = pd.DataFrame([{"Indicator": x.name, "Value": round(x.value, 2), "Bias": x.bias.value} for x in snapshot.macro_details])
-        st.dataframe(macro_df, width='stretch', hide_index=True, use_container_width=True)
 
 def score_rsi(rsi)->int: return 3 if rsi<30 else 4 if rsi<40 else 5 if rsi<50 else 6 if rsi<60 else 7 if rsi<70 else 6
 def score_trend_pct(tp)->int: return 9 if tp>8 else 8 if tp>4 else 7 if tp>1 else 5 if tp>-1 else 4 if tp>-4 else 3 if tp>-8 else 2
@@ -403,19 +348,19 @@ def build_swing_snapshot(config,macro,news)->AssetSnapshot:
         daily = yf.Ticker(ticker).history(period="6mo")
         if daily.empty: daily = yf.Ticker(ticker).history(period="1mo")
         if daily.empty:
-            td = [IndicatorReading("RSI 14", 50.0, 5, score_to_bias(5)), IndicatorReading("Trend vs 50D MA %", 0.0, 5, score_to_bias(5))]
+            td = [IndicatorReading("RSI 14", 50.0, 5, score_to_bias(5))]
             p = 100.0
         else:
             closes = daily['Close'].tolist(); p = closes[-1]; r = calc_rsi(closes)
             m50 = sma(closes, 50); tp = ((p - m50) / m50) * 100 if m50 else 0
             td = [IndicatorReading("RSI 14", r, score_rsi(r), score_to_bias(score_rsi(r))), IndicatorReading("Trend vs 50D MA %", tp, score_trend_pct(tp), score_to_bias(score_trend_pct(tp)))]
     except Exception:
-        td = [IndicatorReading("RSI 14", 50.0, 5, score_to_bias(5)), IndicatorReading("Trend vs 50D MA %", 0.0, 5, score_to_bias(5))]
+        td = [IndicatorReading("RSI 14", 50.0, 5, score_to_bias(5))]
         p = 100.0
     inv=config.get("inverse_dxy",False); safe=config.get("safe_haven",False)
     md=[IndicatorReading("DXY",macro["dxy"],score_dxy(macro["dxy"],inv),score_to_bias(score_dxy(macro["dxy"],inv))),IndicatorReading("VIX",macro["vix"],score_vix(macro["vix"],safe),score_to_bias(score_vix(macro["vix"],safe))),IndicatorReading("Real Yield",macro["real_yield_10y"],score_real_yield(macro["real_yield_10y"],inv),score_to_bias(score_real_yield(macro["real_yield_10y"],inv)))]
-    ms=sum([x.score for x in md])//3; ns=score_news(news.get("sentiment",0.0)); o=int(round((td[0].score+td[1].score)//2*0.45+ms*0.30+ns*0.25))
-    return AssetSnapshot(symbol=config["symbol"],name=config["name"],price=p,technical_score=(td[0].score+td[1].score)//2,macro_score=ms,news_score=ns,overall_score=o,overall_bias=score_to_bias(o),technical_details=td,macro_details=md,news_details=[IndicatorReading("News Sentiment",news.get("sentiment",0),ns,score_to_bias(ns))])
+    ms=sum([x.score for x in md])//3; ns=score_news(news.get("sentiment",0.0)); o=int(round((td[0].score if td else 5)*0.45+ms*0.30+ns*0.25))
+    return AssetSnapshot(symbol=config["symbol"],name=config["name"],price=p,technical_score=td[0].score if td else 5,macro_score=ms,news_score=ns,overall_score=o,overall_bias=score_to_bias(o),technical_details=td,macro_details=md,news_details=[IndicatorReading("News Sentiment",news.get("sentiment",0),ns,score_to_bias(ns))])
 
 def get_monthly_regime_report(asset_key):
     conn = get_conn(); symbol = ASSETS[asset_key]["symbol"]
@@ -428,64 +373,16 @@ def get_monthly_regime_report(asset_key):
         return monthly
     return None
 
-def render_smc_cheat_sheet():
-    st.subheader("🎯 Smart Money Concepts (SMC) Cheat Sheet")
-    st.markdown("""
-    <div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border: 2px solid #f87171; margin-bottom: 20px;'>
-        <h4 style='color: #f87171; margin: 0;'>⚠️ CRITICAL: Weak High = SELL-OFF ZONE</h4>
-        <p style='color: #e8ecf1; font-size: 14px;'><b>Weak Highs are NOT breakout zones!</b> They are <b>DISTRIBUTION ZONES</b>.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    decision_data = {
-        "SMC Signal": ["🟡 Weak High", "🔴 Strong High", "🟢 Strong Low", "🔵 Weak Low"],
-        "Best Action": ["❌ SELL on rejection", "❌ SHORT on rejection", "✅ BUY on bounce", "✅ BUY on bounce"]
-    }
-    st.dataframe(pd.DataFrame(decision_data), width='stretch', hide_index=True, use_container_width=True)
-
-def run_sniper_entry_theory():
-    st.subheader("🎯 Sniper Entry Theory - Visual Guide")
-    st.info("💡 15-point buffer filters 70-80% of fakeouts. Never enter within 5 points of a level.")
-
-def run_indices_bond_tracker():
-    st.subheader("📊 Indices & Bond Tracker")
-    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
-    with col_v1: st.markdown("<div style='background-color: #163a1a; padding: 12px; border-radius: 8px; text-align: center;'><h3 style='color: #4ade80;'>VIX < 15</h3><p style='color: #4ade80;'><b>🟢 ZERO FEAR</b></p></div>", unsafe_allow_html=True)
-    with col_v2: st.markdown("<div style='background-color: #1a2a3a; padding: 12px; border-radius: 8px; text-align: center;'><h3 style='color: #60a5fa;'>15-20</h3><p style='color: #60a5fa;'><b>⚖️ NORMAL</b></p></div>", unsafe_allow_html=True)
-    with col_v3: st.markdown("<div style='background-color: #3a2a1a; padding: 12px; border-radius: 8px; text-align: center;'><h3 style='color: #facc15;'>20-30</h3><p style='color: #facc15;'><b>🟡 HIGH FEAR</b></p></div>", unsafe_allow_html=True)
-    with col_v4: st.markdown("<div style='background-color: #3a1a1a; padding: 12px; border-radius: 8px; text-align: center;'><h3 style='color: #f87171;'>VIX > 30</h3><p style='color: #f87171;'><b>🔴 EXTREME</b></p></div>", unsafe_allow_html=True)
-
-def run_vwap_ema_strategy():
-    st.subheader("📊 VWAP & 9 EMA Strategy")
-    st.success("✅ LONG: Price ABOVE 9 EMA + ABOVE VWAP + Higher highs + DXY weak")
-
-def run_ny_afternoon_sniper():
-    st.subheader("🇺🇸 NY Afternoon Sniper (3:30-4:30 PM UK)")
-    st.info("Better price action after initial NY chaos settles.")
-
-def run_smart_money_levels():
-    st.subheader("🎯 Smart Money Levels")
-
 def classify_market_conditions(ticker="MNQ=F"):
     try:
         profile = ASSET_VOLATILITY_PROFILES.get(ticker, ASSET_VOLATILITY_PROFILES["MNQ=F"])
         trending_min = profile["trending_min"]; ranging_max = profile["ranging_max"]
         data = yf.Ticker(ticker).history(period="2d", interval="5m")
-        if data.empty: return {"classification": "UNKNOWN", "reason": "No data available"}
-        # FIX: use UTC date to avoid timezone mismatch
+        if data.empty: return {"classification": "UNKNOWN", "reason": "No data"}
         today_utc = datetime.now(timezone.utc).date()
         data_today = data[data.index.date == today_utc]
         if data_today.empty: data_today = data.tail(100)
-        high = data_today['High']; low = data_today['Low']; close = data_today['Close']
-        tr1 = high - low; tr2 = abs(high - close.shift(1)); tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        up_move = high - high.shift(1); down_move = low.shift(1) - low
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-        atr = tr.rolling(14).mean().iloc[-1] if len(tr) >= 14 else tr.mean()
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean().iloc[-1] / atr) if atr > 0 else 0
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean().iloc[-1] / atr) if atr > 0 else 0
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
-        adx = dx
+        adx, plus_di, minus_di = calc_adx(data_today)
         vwap = (data_today['Close'] * data_today['Volume']).cumsum() / data_today['Volume'].cumsum()
         vwap_slope = (vwap.iloc[-1] - vwap.iloc[-5]) / vwap.iloc[-5] * 100 if len(vwap) >= 5 else 0
         ema9 = data_today['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
@@ -494,10 +391,8 @@ def classify_market_conditions(ticker="MNQ=F"):
         current_price = data_today['Close'].iloc[-1]
         ema_separation = abs(ema9 - ema20) / current_price * 100
         ny_data = data_today.between_time('08:00', '09:29')
-        if ny_data.empty or len(ny_data) < 5:
-            ny_data = data_today.between_time('07:30', '09:29')
-        if not ny_data.empty: ny_range = ny_data['High'].max() - ny_data['Low'].min()
-        else: ny_range = 0
+        if ny_data.empty or len(ny_data) < 5: ny_data = data_today.between_time('07:30', '09:29')
+        ny_range = (ny_data['High'].max() - ny_data['Low'].min()) if not ny_data.empty else 0
         if current_price > ema9 > ema20 > ema50: trend_direction = "UP"
         elif current_price < ema9 < ema20 < ema50: trend_direction = "DOWN"
         else: trend_direction = "MIXED"
@@ -510,168 +405,171 @@ def classify_market_conditions(ticker="MNQ=F"):
         elif ema_separation < 0.05: ranging_signals += 1
         if ny_range > trending_min: trending_signals += 1
         elif ny_range < ranging_max: ranging_signals += 1
-        ema200 = data_today['Close'].ewm(span=200, adjust=False).mean().iloc[-1]
-        if abs(current_price - ema200) / current_price > 0.005: trending_signals += 1
-        else: ranging_signals += 1
-        if trending_signals >= 3: classification = "TRENDING"; strategy = "Trend-Fade Hybrid"; confidence = min(100, 50 + trending_signals * 10)
-        elif ranging_signals >= 3: classification = "RANGING"; strategy = "High Yield Protocol"; confidence = min(100, 50 + ranging_signals * 10)
-        else: classification = "UNCLEAR"; strategy = "SIT OUT"; confidence = 50
-        return {"classification": classification, "strategy": strategy, "confidence": confidence, "asset_name": profile["name"], "typical_range": profile["typical_range"], "adx": round(adx, 1), "vwap_slope": round(vwap_slope, 3), "ema_separation": round(ema_separation, 3), "ny_range": round(ny_range, 1), "trend_direction": trend_direction, "current_price": current_price, "ema9": ema9, "ema20": ema20, "ema50": ema50, "ema200": ema200, "vwap": vwap.iloc[-1], "trending_signals": trending_signals, "ranging_signals": ranging_signals}
+        if trending_signals >= 3: classification = "TRENDING"
+        elif ranging_signals >= 3: classification = "RANGING"
+        else: classification = "UNCLEAR"
+        return {"classification": classification, "asset_name": profile["name"], "typical_range": profile["typical_range"], "adx": round(adx, 1), "plus_di": round(plus_di, 1), "minus_di": round(minus_di, 1), "vwap_slope": round(vwap_slope, 3), "ema_separation": round(ema_separation, 3), "ny_range": round(ny_range, 1), "trend_direction": trend_direction, "current_price": current_price, "ema9": ema9, "ema20": ema20, "ema50": ema50, "ema200": data_today['Close'].ewm(span=200, adjust=False).mean().iloc[-1], "vwap": vwap.iloc[-1], "trending_signals": trending_signals, "ranging_signals": ranging_signals}
     except Exception as e:
         return {"classification": "UNKNOWN", "reason": str(e)}
 
+def detect_breakout(df, direction="UP", lookback=20):
+    if len(df) < lookback + 2: return False, 0.0, 0.0
+    if direction == "UP":
+        prior_swing = df['High'].iloc[-lookback:-1].max()
+        current_close = df['Close'].iloc[-1]
+        return current_close > prior_swing, prior_swing, current_close
+    else:
+        prior_swing = df['Low'].iloc[-lookback:-1].min()
+        current_close = df['Close'].iloc[-1]
+        return current_close < prior_swing, prior_swing, current_close
+
+def get_last_swing_levels(df, lookback=30):
+    if len(df) < lookback: return df['High'].max(), df['Low'].min()
+    highs = df['High'].values; lows = df['Low'].values
+    swing_highs = []; swing_lows = []
+    for i in range(3, len(df) - 3):
+        if highs[i] > max(highs[max(0,i-3):i]) and highs[i] > max(highs[i+1:min(len(highs),i+4)]): swing_highs.append(highs[i])
+        if lows[i] < min(lows[max(0,i-3):i]) and lows[i] < min(lows[i+1:min(len(lows),i+4)]): swing_lows.append(lows[i])
+    last_high = swing_highs[-1] if swing_highs else df['High'].max()
+    last_low = swing_lows[-1] if swing_lows else df['Low'].min()
+    return last_high, last_low
+
 # ============ PART 2 of 2 ============
-def run_high_yield_protocol():
-    st.subheader("⚡ High Yield Protocol (4.5%+ Yields)")
-    st.caption("Contrarian strategy — fades extremes and trades ranges. US Session only.")
-    macro = get_macro_data()
-    tnx = macro['yield_10y']; vix = macro['vix']; dxy = macro['dxy']
-    if tnx < 4.5:
-        st.success(f"🟢 Yields below 4.5% ({tnx:.2f}%). Use normal VWAP & EMA strategy.")
-        st.info("👀 Preview: On high-yield days this page offers Fade Extremes + Range Trading on MNQ, M2K, US30, MES, MGC.")
-        return
-    st.warning(f"🔴 HIGH YIELD MODE ACTIVE (US10Y: {tnx:.2f}%)")
-    col_m1, col_m2, col_m3 = st.columns(3)
-    with col_m1: st.metric("US10Y Yield", f"{tnx:.2f}%", delta="HIGH", delta_color="inverse")
-    with col_m2: st.metric("VIX", f"{vix:.2f}")
-    with col_m3: st.metric("DXY", f"{dxy:.2f}")
-    st.markdown("---")
-    asset_choice = st.selectbox("Select Asset", ["MNQ (Micro Nasdaq)", "M2K (Micro Russell 2000)", "US30 (Micro Dow)", "MGC (Micro Gold)", "MES (Micro S&P 500)"], index=0, key="high_yield_asset_select")
-    asset_map = {"MNQ (Micro Nasdaq)": ("MNQ=F","MNQ"), "M2K (Micro Russell 2000)": ("M2K=F","M2K"), "US30 (Micro Dow)": ("YM=F","US30"), "MGC (Micro Gold)": ("MGC=F","MGC"), "MES (Micro S&P 500)": ("MES=F","MES")}
+
+# ============ 🚀 PURE TREND RIDER ============
+def run_pure_trend_rider():
+    st.subheader("🚀 Pure Trend Rider")
+    st.caption("Ride the trend with trailing stops. Breakout entries with all filters.")
+    asset_choice = st.selectbox("Select Asset", ["MNQ (Micro Nasdaq)", "M2K (Micro Russell 2000)", "US30 (Micro Dow)", "MES (Micro S&P 500)", "MGC (Micro Gold)"], index=2, key="ptr_asset_select")
+    asset_map = {"MNQ (Micro Nasdaq)": ("MNQ=F", "MNQ"), "M2K (Micro Russell 2000)": ("M2K=F", "M2K"), "US30 (Micro Dow)": ("YM=F", "US30"), "MES (Micro S&P 500)": ("MES=F", "MES"), "MGC (Micro Gold)": ("MGC=F", "MGC")}
     ticker, asset_key = asset_map[asset_choice]
     asset_name = asset_choice.split(" (")[0]
-    with st.spinner(f"Fetching NY session data for {asset_name}..."):
-        data = yf.Ticker(ticker).history(period="2d", interval="5m")
-    if data.empty: st.warning(f"No data for {asset_name}."); return
-    today_utc = datetime.now(timezone.utc).date()
-    data_today = data[data.index.date == today_utc]
-    if data_today.empty: data_today = data.tail(100)
-    ny_data = data_today.between_time('08:00', '09:29')
-    if ny_data.empty or len(ny_data) < 5:
-        ny_data = data_today.between_time('07:30', '09:29')
-    if ny_data.empty: st.warning("NY Pre-Market data not available."); return
-    ny_high = ny_data['High'].max(); ny_low = ny_data['Low'].min()
-    ny_range = ny_high - ny_low; current_price = data_today['Close'].iloc[-1]
-    min_range = MIN_NY_RANGE.get(asset_key, 5)
-    if ny_range < min_range:
-        st.error(f"🚫 NY Range too small for {asset_name} ({ny_range:.1f} pts < min {min_range} pts). Signals unreliable — WAIT.")
+    now_utc = datetime.now(timezone.utc); uk_time = now_utc.astimezone(ZoneInfo("Europe/London"))
+    session_key, session_info, session_remaining, next_key, until_next = get_current_session(uk_time)
+    blackout, blackout_reason = is_blackout(uk_time)
+    macro = get_macro_data()
+    tnx = macro['yield_10y']; vix = macro['vix']; dxy = macro['dxy']
+    regime_key, regime_label, regime_size, regime_trail, regime_assets, regime_note = get_yield_regime(tnx)
+    if session_key:
+        st.markdown(f"""<div style='background-color: #1a3a2a; padding: 20px; border-radius: 10px; border: 2px solid #4ade80; margin-bottom: 20px;'><h2 style='color: #4ade80; margin: 0;'>🟢 {session_info["name"]} WINDOW ACTIVE</h2><p style='color: #e8ecf1;'>Time remaining: <b>{fmt_countdown(session_remaining)}</b></p></div>""", unsafe_allow_html=True)
+    elif blackout:
+        st.markdown(f"""<div style='background-color: #3a1a1a; padding: 20px; border-radius: 10px; border: 2px solid #f87171; margin-bottom: 20px;'><h2 style='color: #f87171; margin: 0;'>🔴 BLACKOUT — DO NOT TRADE</h2><p style='color: #e8ecf1;'>Reason: {blackout_reason}</p><p style='color: #a0aec0; font-size: 13px;'>Next: {SESSIONS[next_key]["name"] if next_key else "—"} in {fmt_countdown(until_next)}</p></div>""", unsafe_allow_html=True)
         return
-    st.markdown(f"### 📊 {asset_name} Key NY Levels")
-    col_l1, col_l2, col_l3, col_l4 = st.columns(4)
-    with col_l1: st.metric("NY High", f"{ny_high:.2f}")
-    with col_l2: st.metric("NY Low", f"{ny_low:.2f}")
-    with col_l3: st.metric("Range", f"{ny_range:.2f} pts")
-    with col_l4: st.metric("Price", f"{current_price:.2f}")
-    range_top = ny_high - (ny_range * 0.15); range_bottom = ny_low + (ny_range * 0.15)
-    near_high = current_price > (ny_high - ny_range * 0.1)
-    near_low = current_price < (ny_low + ny_range * 0.1)
-    above_range_top = current_price > range_top; below_range_bottom = current_price < range_bottom
-    if near_high and not near_low: zone = "🔴 EXTREME HIGH"; zone_color = "#3a1a1a"; valid_signal = "SHORT"
-    elif near_low and not near_high: zone = "🟢 EXTREME LOW"; zone_color = "#1a3a2a"; valid_signal = "LONG"
-    elif above_range_top and not near_high: zone = "🔴 RANGE TOP"; zone_color = "#3a1a1a"; valid_signal = "SHORT"
-    elif below_range_bottom and not near_low: zone = "🟢 RANGE BOTTOM"; zone_color = "#1a3a2a"; valid_signal = "LONG"
-    else: zone = "⚪ MIDDLE"; zone_color = "#1c2129"; valid_signal = "NONE"
-    st.markdown(f"""<div style='background-color: {zone_color}; padding: 15px; border-radius: 8px; border: 1px solid #facc15;'><h4 style='color: #facc15;'>📍 {zone}</h4><ul style='color: #e8ecf1;'><li><b>Price:</b> {current_price:.2f}</li><li><b>Valid:</b> {valid_signal}</li></ul></div>""", unsafe_allow_html=True)
-    st.markdown("---")
-    st.markdown("### 📉 Signal 1: Fade Extremes")
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        st.markdown("#### 🟢 Fade High (SHORT)")
-        if near_high and not near_low:
-            entry = current_price
-            stop = safe_stop(entry, "SHORT", ny_high, asset_key)
-            target = entry - (ny_range * 0.5)
-            risk = stop - entry
-            reward = entry - target
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            dollar_risk = risk * TICK_VALUES.get(asset_key, 1.0)
-            st.error("✅ SHORT SIGNAL")
-            st.markdown(f"<div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #f87171;'><b>Entry:</b> {entry:.2f}<br><b>Stop:</b> {stop:.2f} <small>(above entry ✅)</small><br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts (${dollar_risk:.2f}/contract)<br><b>Reward:</b> {reward:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</div>", unsafe_allow_html=True)
-        else:
-            st.info(f"⏳ Need price within 10% of NY High ({ny_high:.2f})")
-    with col_s2:
-        st.markdown("#### 🔴 Fade Low (LONG)")
-        if near_low and not near_high:
-            entry = current_price
-            stop = safe_stop(entry, "LONG", ny_low, asset_key)
-            target = entry + (ny_range * 0.5)
-            risk = entry - stop
-            reward = target - entry
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            dollar_risk = risk * TICK_VALUES.get(asset_key, 1.0)
-            st.success("✅ LONG SIGNAL")
-            st.markdown(f"<div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #4ade80;'><b>Entry:</b> {entry:.2f}<br><b>Stop:</b> {stop:.2f} <small>(below entry ✅)</small><br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts (${dollar_risk:.2f}/contract)<br><b>Reward:</b> {reward:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</div>", unsafe_allow_html=True)
-        else:
-            st.info(f"⏳ Need price within 10% of NY Low ({ny_low:.2f})")
-    st.markdown("---")
-    st.markdown("### 📊 Signal 2: Range Trading")
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        st.markdown("#### 📈 Range Top (SHORT)")
-        if above_range_top and not near_high:
-            entry = current_price
-            stop = safe_stop(entry, "SHORT", ny_high, asset_key)
-            target = ny_low + (ny_range * 0.3)
-            risk = stop - entry
-            reward = entry - target
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            st.error("✅ RANGE SHORT")
-            st.markdown(f"<div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px;'><b>Entry:</b> {entry:.2f}<br><b>Stop:</b> {stop:.2f}<br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</div>", unsafe_allow_html=True)
-        else: st.info("⏳ Waiting for range edge")
-    with col_r2:
-        st.markdown("#### 📉 Range Bottom (LONG)")
-        if below_range_bottom and not near_low:
-            entry = current_price
-            stop = safe_stop(entry, "LONG", ny_low, asset_key)
-            target = ny_high - (ny_range * 0.3)
-            risk = entry - stop
-            reward = target - entry
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            st.success("✅ RANGE LONG")
-            st.markdown(f"<div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px;'><b>Entry:</b> {entry:.2f}<br><b>Stop:</b> {stop:.2f}<br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</div>", unsafe_allow_html=True)
-        else: st.info("⏳ Waiting for range edge")
-    st.markdown("---")
-    st.warning("⚠️ CONTRARIAN strategy — 25% POSITION SIZE — EXIT BY 4:30 PM UK")
+    else:
+        st.markdown(f"""<div style='background-color: #2a2a1a; padding: 20px; border-radius: 10px; border: 2px solid #facc15; margin-bottom: 20px;'><h2 style='color: #facc15; margin: 0;'>⏳ BETWEEN SESSIONS</h2><p style='color: #e8ecf1;'>Next: <b>{SESSIONS[next_key]["name"] if next_key else "—"}</b> in <b>{fmt_countdown(until_next)}</b></p></div>""", unsafe_allow_html=True)
+        return
+    st.markdown(f"""<div style='background-color: #1c2129; padding: 15px; border-radius: 10px; border-left: 4px solid #facc15; margin-bottom: 20px;'><h4 style='color: #facc15; margin: 0 0 8px 0;'>📊 YIELD REGIME: {regime_label} (US10Y: {tnx:.2f}%)</h4><b>Position size:</b> {int(regime_size*100)}% of normal<br><b>Preferred assets:</b> {", ".join(regime_assets)}<br><b>Trail distance:</b> {regime_trail:.2f} ATR<br><b>Note:</b> {regime_note}</div>""", unsafe_allow_html=True)
+    if asset_key not in regime_assets:
+        st.error(f"🚫 {asset_name} is NOT in the preferred list for {regime_label} regime. Switch to: {', '.join(regime_assets)}")
+        return
+    if uk_time.weekday() == 4 and uk_time.hour >= 18:
+        st.error("🚫 Friday after 6 PM UK — NO TRADING"); return
+    with st.spinner(f"Analyzing {asset_name}..."):
+        data = yf.Ticker(ticker).history(period="2d", interval="5m")
+        if data.empty: st.warning(f"No data for {asset_name}"); return
+        today_utc = datetime.now(timezone.utc).date()
+        data_today = data[data.index.date == today_utc]
+        if data_today.empty: data_today = data.tail(100)
+        current_price = data_today['Close'].iloc[-1]
+        atr = calc_atr(data_today)
+        adx, plus_di, minus_di = calc_adx(data_today)
+        vwap = (data_today['Close'] * data_today['Volume']).cumsum() / data_today['Volume'].cumsum()
+        current_vwap = vwap.iloc[-1]
+        ema9 = data_today['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+        ema20 = data_today['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = data_today['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        last_swing_high, last_swing_low = get_last_swing_levels(data_today)
+    st.markdown("### ✅ Filter Checklist")
+    checks = []
+    adx_pass = adx > 25
+    checks.append(("ADX > 25", adx_pass, f"ADX = {adx:.1f}", "+3-5% win rate"))
+    bullish_stack = current_price > ema9 > ema20 > ema50
+    bearish_stack = current_price < ema9 < ema20 < ema50
+    stack_pass = bullish_stack or bearish_stack
+    stack_dir = "LONG" if bullish_stack else "SHORT" if bearish_stack else "MIXED"
+    checks.append(("EMA Stack Aligned", stack_pass, f"Direction: {stack_dir}", "+3-4% win rate"))
+    vwap_long = current_price > current_vwap; vwap_short = current_price < current_vwap
+    vwap_pass = vwap_long or vwap_short
+    checks.append(("VWAP Alignment", vwap_pass, f"Price {'above' if vwap_long else 'below'} VWAP", "+3-4% win rate"))
+    macro_score = 0
+    if dxy < 103: macro_score += 1
+    if tnx < 4.5: macro_score += 1
+    if vix < 25: macro_score += 1
+    macro_pass = macro_score >= 2
+    checks.append(("Macro 2/3 Alignment", macro_pass, f"DXY {dxy:.2f}, 10Y {tnx:.2f}%, VIX {vix:.2f} — {macro_score}/3", "+2-3% win rate"))
+    vix_pass = vix < 30
+    checks.append(("VIX < 30", vix_pass, f"VIX = {vix:.2f}", "+5% win rate"))
+    day_pass = not (uk_time.weekday() == 4)
+    checks.append(("Not Friday", day_pass, f"Day = {uk_time.strftime('%A')}", "+2-3% win rate"))
+    all_pass = all(c[1] for c in checks); passed_count = sum(1 for c in checks if c[1])
+    for name, passed, detail, boost in checks:
+        icon = "✅" if passed else "❌"; color = "#4ade80" if passed else "#f87171"
+        st.markdown(f"<div style='padding: 8px; border-left: 3px solid {color}; margin: 4px 0;'>{icon} <b>{name}</b> — {detail} <span style='color: #a0aec0; font-size: 12px;'>({boost})</span></div>", unsafe_allow_html=True)
+    if not vix_pass: st.error(f"🚫 VIX > 30 ({vix:.2f}) — EXTREME VOLATILITY."); return
+    if not all_pass: st.warning(f"⚠️ {passed_count}/6 filters passed. Pure Trend Rider requires ALL filters. WAIT."); return
+    st.success(f"🟢 ALL 6 FILTERS PASSED — Setup valid!")
+    st.markdown("---"); st.markdown("### 📈 Trend Analysis")
+    if bullish_stack and vwap_long:
+        direction = "LONG"; is_breakout, prior_swing, _ = detect_breakout(data_today, "UP", lookback=20)
+        st.success(f"🟢 BULLISH TREND — Looking for LONG breakout")
+    elif bearish_stack and vwap_short:
+        direction = "SHORT"; is_breakout, prior_swing, _ = detect_breakout(data_today, "DOWN", lookback=20)
+        st.error(f"🔴 BEARISH TREND — Looking for SHORT breakout")
+    else: st.warning("⚪ CONFLICT: EMA stack and VWAP disagree"); return
+    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+    with col_t1: st.metric("ADX", f"{adx:.1f}")
+    with col_t2: st.metric("+DI / -DI", f"{plus_di:.1f} / {minus_di:.1f}")
+    with col_t3: st.metric("ATR", f"{atr:.2f}")
+    with col_t4: st.metric("Price", f"{current_price:.2f}")
+    if not is_breakout: st.info(f"⏳ No breakout yet. Waiting for close beyond {prior_swing:.2f}"); return
+    st.markdown("---"); st.markdown("### 🚀 BREAKOUT DETECTED")
+    st.success(f"✅ Price closed {'above' if direction == 'LONG' else 'below'} prior swing {prior_swing:.2f}")
+    distance_from_swing = abs(current_price - prior_swing)
+    if distance_from_swing > (atr * 0.5): st.warning(f"⚠️ Price already moved {distance_from_swing:.2f} pts past the swing — DO NOT CHASE."); return
+    if direction == "LONG":
+        entry = current_price; stop = safe_stop(entry, "LONG", last_swing_low, asset_key)
+    else:
+        entry = current_price; stop = safe_stop(entry, "SHORT", last_swing_high, asset_key)
+    risk = abs(stop - entry); dollar_risk = risk * TICK_VALUES.get(asset_key, 1.0)
+    base_contracts = 1; final_size = base_contracts * session_info["size"] * regime_size
+    display_size = max(1, round(final_size))
+    st.markdown("### 📋 TRADE PLAN")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.metric("Direction", direction); st.metric("Entry", f"{entry:.2f}")
+        st.metric("Stop", f"{stop:.2f}", delta=f"{'above' if direction=='SHORT' else 'below'} entry ✅")
+        st.metric("Risk", f"{risk:.2f} pts (${dollar_risk:.2f}/contract)")
+    with col_p2:
+        st.metric("Target", "NONE — TRAIL"); st.metric("Size", f"{display_size} contract(s)")
+        st.metric("Session", session_info["name"]); st.metric("Regime", regime_label)
+    st.markdown("---"); st.markdown("### 🎯 TRAILING STOP RULES")
+    if direction == "LONG":
+        st.markdown(f"""<div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px;'><b>Entry:</b> {entry:.2f} | <b>Initial Stop:</b> {stop:.2f}<br><br><b>Stage 1 (1R):</b> Move stop to <b>{entry:.2f}</b> (breakeven)<br><b>Stage 2 (2R):</b> Move stop to <b>{last_swing_low:.2f}</b><br><b>Stage 3 (3R):</b> Trail by <b>{atr * regime_trail:.2f}</b> pts<br><b>Stage 4 (4R+):</b> Trail by <b>{atr * regime_trail * 0.5:.2f}</b> pts</div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""<div style='background-color: #3a1a1a; padding: 15px; border-radius: 8px;'><b>Entry:</b> {entry:.2f} | <b>Initial Stop:</b> {stop:.2f}<br><br><b>Stage 1 (1R):</b> Move stop to <b>{entry:.2f}</b> (breakeven)<br><b>Stage 2 (2R):</b> Move stop to <b>{last_swing_high:.2f}</b><br><b>Stage 3 (3R):</b> Trail by <b>{atr * regime_trail:.2f}</b> pts<br><b>Stage 4 (4R+):</b> Trail by <b>{atr * regime_trail * 0.5:.2f}</b> pts</div>""", unsafe_allow_html=True)
+    st.markdown("---"); st.markdown("### ⚠️ CRITICAL REMINDERS")
+    st.markdown(f"- 🚫 Do NOT add to losing positions\n- 🚫 Do NOT chase\n- 🚫 Do NOT move stops wider\n- ✅ Exit by end of session ({session_info['end']} UK)\n- ✅ Take partial at 2R")
 
+
+# ============ 📈 TREND-FADE HYBRID ============
 def run_trend_fade_hybrid():
     st.subheader("📈 Trend-Fade Hybrid")
-    st.caption("Fade pullbacks WITHIN the trend. Works when markets are trending. Best: 3:00-4:00 PM UK")
+    st.caption("Fade pullbacks WITHIN the trend. Fires early when trend detected.")
     asset_choice = st.selectbox("Select Asset", ["MNQ (Micro Nasdaq)", "M2K (Micro Russell 2000)", "US30 (Micro Dow)", "MGC (Micro Gold)", "MES (Micro S&P 500)"], index=0, key="tfh_asset_select")
-    asset_map = {"MNQ (Micro Nasdaq)": ("MNQ=F","MNQ"), "M2K (Micro Russell 2000)": ("M2K=F","M2K"), "US30 (Micro Dow)": ("YM=F","US30"), "MGC (Micro Gold)": ("MGC=F","MGC"), "MES (Micro S&P 500)": ("MES=F","MES")}
+    asset_map = {"MNQ (Micro Nasdaq)": ("MNQ=F", "MNQ"), "M2K (Micro Russell 2000)": ("M2K=F", "M2K"), "US30 (Micro Dow)": ("YM=F", "US30"), "MGC (Micro Gold)": ("MGC=F", "MGC"), "MES (Micro S&P 500)": ("MES=F", "MES")}
     ticker, asset_key = asset_map[asset_choice]
     asset_name = asset_choice.split(" (")[0]
     market = classify_market_conditions(ticker)
-    if market['classification'] == "TRENDING":
-        banner_color = "#1a3a2a"; border_color = "#4ade80"; icon = "🟢"; title = "TREND MODE ACTIVE"
-        subtitle = "Fade pullbacks in the direction of the trend"
-    elif market['classification'] == "RANGING":
-        banner_color = "#3a1a1a"; border_color = "#f87171"; icon = "🔴"; title = "RANGE MODE ACTIVE"
-        subtitle = "DO NOT use Trend-Fade — switch to High Yield Protocol"
-    else:
-        banner_color = "#2a2a1a"; border_color = "#facc15"; icon = "🟡"; title = "UNCLEAR MARKET"
-        subtitle = "Sit out — no clear trend or range"
-    st.markdown(f"""<div style='background-color: {banner_color}; padding: 20px; border-radius: 10px; border: 2px solid {border_color}; margin-bottom: 20px;'><h2 style='color: {border_color}; margin: 0;'>{icon} {title} — {asset_name}</h2><p style='color: #e8ecf1;'>{subtitle}</p><p style='color: #a0aec0; font-size: 13px;'>Confidence: {market.get('confidence', 0)}%</p></div>""", unsafe_allow_html=True)
-    if market['classification'] != "TRENDING":
-        st.warning(f"⚠️ TREND-FADE NOT RECOMMENDED for {asset_name}.")
-        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-        with col_c1: st.metric("ADX", market.get('adx', 0))
-        with col_c2: st.metric("VWAP Slope", f"{market.get('vwap_slope', 0):.3f}%")
-        with col_c3: st.metric("EMA Sep", f"{market.get('ema_separation', 0):.3f}%")
-        with col_c4: st.metric("NY Range", f"{market.get('ny_range', 0):.1f}")
-        return
+    market_class = market.get('classification', 'UNKNOWN'); adx = market.get('adx', 0)
+    if market_class != "TRENDING": st.warning(f"⚠️ Market is {market_class}, not TRENDING."); return
+    if adx < 25: st.warning(f"⚠️ ADX is {adx:.1f} (< 25). WAIT for ADX > 25."); return
     now_utc = datetime.now(timezone.utc); uk_time = now_utc.astimezone(ZoneInfo("Europe/London"))
-    current_hour = uk_time.hour; current_minute = uk_time.minute
-    in_primary_window = (current_hour == 15) or (current_hour == 16 and current_minute <= 0)
-    col_t1, col_t2, col_t3 = st.columns(3)
-    with col_t1: st.metric("UK Time", uk_time.strftime("%H:%M"))
-    with col_t2:
-        if in_primary_window: st.success("✅ PRIMARY WINDOW")
-        else: st.warning("⏳ Outside optimal window")
-    with col_t3: st.metric("Trend", market['trend_direction'])
-    st.markdown("---")
-    with st.spinner(f"Loading {asset_name} data..."):
+    session_key, session_info, session_remaining, next_key, until_next = get_current_session(uk_time)
+    if not session_key: st.warning(f"⏳ Not in a session window. Next: {SESSIONS[next_key]['name']} in {fmt_countdown(until_next)}"); return
+    st.success(f"🟢 {session_info['name']} WINDOW — {fmt_countdown(session_remaining)} remaining")
+    with st.spinner(f"Loading {asset_name}..."):
         data = yf.Ticker(ticker).history(period="2d", interval="5m")
-        if data.empty: st.warning(f"No data for {asset_name}"); return
+        if data.empty: st.warning("No data."); return
         today_utc = datetime.now(timezone.utc).date()
         data_today = data[data.index.date == today_utc]
         if data_today.empty: data_today = data.tail(100)
@@ -679,203 +577,217 @@ def run_trend_fade_hybrid():
         vwap = (data_today['Close'] * data_today['Volume']).cumsum() / data_today['Volume'].cumsum()
         current_vwap = vwap.iloc[-1]
         ema9 = data_today['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
-        ema20 = data_today['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-        ny_data = data_today.between_time('08:00', '09:29')
-        if ny_data.empty or len(ny_data) < 5:
-            ny_data = data_today.between_time('07:30', '09:29')
-        ny_range = (ny_data['High'].max() - ny_data['Low'].min()) if not ny_data.empty else 0
-        highs = data_today['High'].values; lows = data_today['Low'].values
-        swing_highs = []; swing_lows = []
-        for i in range(5, len(data_today) - 5):
-            if highs[i] > max(highs[max(0,i-5):i]) and highs[i] > max(highs[i+1:min(len(highs),i+6)]): swing_highs.append(highs[i])
-            if lows[i] < min(lows[max(0,i-5):i]) and lows[i] < min(lows[i+1:min(len(lows),i+6)]): swing_lows.append(lows[i])
-    st.markdown("### 📊 Key Levels")
-    col_l1, col_l2, col_l3, col_l4 = st.columns(4)
-    with col_l1: st.metric("Price", f"{current_price:.2f}")
-    with col_l2: st.metric("VWAP", f"{current_vwap:.2f}", delta=f"{current_price - current_vwap:+.2f}")
-    with col_l3: st.metric("9 EMA", f"{ema9:.2f}", delta=f"{current_price - ema9:+.2f}")
-    with col_l4: st.metric("20 EMA", f"{ema20:.2f}", delta=f"{current_price - ema20:+.2f}")
-    st.markdown("---")
-    st.markdown("### 🎯 Trend Analysis")
-    fallback_dist = ny_range if ny_range > 0 else (20 if asset_key == "MNQ" else 10 if asset_key == "M2K" else 100 if asset_key == "US30" else 8)
+        last_high, last_low = get_last_swing_levels(data_today)
     if market['trend_direction'] == "UP":
-        st.success(f"🟢 UPTREND on {asset_name} — LONG pullback entries")
-        trade_direction = "LONG"
-        entry_zone_low = min(ema9, current_vwap); entry_zone_high = max(ema9, current_vwap)
-        target = max(swing_highs[-3:]) if len(swing_highs) >= 3 else current_price + fallback_dist
-        raw_stop = min(swing_lows[-2:]) if len(swing_lows) >= 2 else current_price - fallback_dist
-        stop = min(raw_stop, current_price - STOP_BUFFERS.get(asset_key, 5))
+        direction = "LONG"; entry_zone = min(ema9, current_vwap)
+        stop = safe_stop(current_price, "LONG", last_low, asset_key)
+        target = last_high if last_high > current_price else current_price + (current_price - stop) * 2.5
     elif market['trend_direction'] == "DOWN":
-        st.error(f"🔴 DOWNTREND on {asset_name} — SHORT pullback entries")
-        trade_direction = "SHORT"
-        entry_zone_low = min(ema9, current_vwap); entry_zone_high = max(ema9, current_vwap)
-        target = min(swing_lows[-3:]) if len(swing_lows) >= 3 else current_price - fallback_dist
-        raw_stop = max(swing_highs[-2:]) if len(swing_highs) >= 2 else current_price + fallback_dist
-        stop = max(raw_stop, current_price + STOP_BUFFERS.get(asset_key, 5))
-    else:
-        st.warning("⚪ MIXED SIGNALS")
-        trade_direction = "WAIT"; entry_zone_low = entry_zone_high = target = stop = 0
-    if trade_direction != "WAIT":
-        st.markdown("### 🎯 Trade Setup")
-        if trade_direction == "LONG":
-            risk = current_price - stop; reward = target - current_price
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            st.markdown(f"""<div style='background-color: #1a3a2a; padding: 20px; border-radius: 10px; border-left: 4px solid #4ade80;'><h4 style='color: #4ade80;'>📈 LONG — {asset_name}</h4><p style='color: #e8ecf1;'><b>Entry Zone:</b> {entry_zone_low:.2f} — {entry_zone_high:.2f}<br><b>Stop:</b> {stop:.2f} <small>(below entry ✅)</small><br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts<br><b>Reward:</b> {reward:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</p></div>""", unsafe_allow_html=True)
-        else:
-            risk = stop - current_price; reward = current_price - target
-            rr = clamp_rr(reward / risk) if risk > 0.01 else 0.0
-            st.markdown(f"""<div style='background-color: #3a1a1a; padding: 20px; border-radius: 10px; border-left: 4px solid #f87171;'><h4 style='color: #f87171;'>📉 SHORT — {asset_name}</h4><p style='color: #e8ecf1;'><b>Entry Zone:</b> {entry_zone_low:.2f} — {entry_zone_high:.2f}<br><b>Stop:</b> {stop:.2f} <small>(above entry ✅)</small><br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts<br><b>Reward:</b> {reward:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</p></div>""", unsafe_allow_html=True)
-    st.markdown("---")
-    st.markdown("### ✅ Three-Confirmation Rule")
-    macro = get_macro_data()
-    tnx = macro.get('yield_10y', 4.20); dxy = macro.get('dxy', 102.0)
-    confirmations = []
-    if trade_direction == "LONG": macro_ok = dxy < 103 and tnx < 4.5
-    else: macro_ok = dxy > 103 or tnx > 4.5
-    confirmations.append({"name": "Macro", "passed": macro_ok, "reason": f"DXY {dxy:.2f}, 10Y {tnx:.2f}%"})
-    if trade_direction == "LONG": vwap_ok = current_price > current_vwap
-    else: vwap_ok = current_price < current_vwap
-    confirmations.append({"name": "VWAP", "passed": vwap_ok, "reason": f"Price vs VWAP"})
-    if trade_direction == "LONG": ema_ok = current_price > ema9
-    else: ema_ok = current_price < ema9
-    confirmations.append({"name": "9 EMA", "passed": ema_ok, "reason": f"Price vs 9 EMA"})
-    for c in confirmations:
-        if c['passed']: st.success(f"✅ **{c['name']}** — {c['reason']}")
-        else: st.error(f"❌ **{c['name']}** — {c['reason']}")
-    if all(c['passed'] for c in confirmations): st.success(f"🟢 ALL PASSED — {asset_name} valid!")
-    else: st.error(f"🔴 NOT ALL PASSED — DO NOT TRADE")
-    st.markdown("### 📌 Asset-Specific Notes")
-    if "M2K" in asset_name: st.info("**🏭 M2K:** Small caps rate-sensitive. Typical range 15-30 pts. Avoid if 10Y > 4.5%.")
-    elif "US30" in asset_name: st.info("**🏛️ US30:** Trends beautifully. 5-8× MNQ range. Typical 150-350 pts. Buffer = 20 pts.")
-    elif "MGC" in asset_name: st.warning("**🥇 MGC:** HATES rising yields. Hard stop if 10Y > 4.3%. Typical 8-20 pts.")
-    elif "MES" in asset_name: st.info("**📈 MES:** Broadest index. Typical 20-40 pts.")
-    elif "MNQ" in asset_name: st.info("**📈 MNQ:** Most volatile. Typical 40-80 pts.")
+        direction = "SHORT"; entry_zone = max(ema9, current_vwap)
+        stop = safe_stop(current_price, "SHORT", last_high, asset_key)
+        target = last_low if last_low < current_price else current_price - (stop - current_price) * 2.5
+    else: st.warning("⚪ Mixed signals."); return
+    if direction == "LONG": risk = current_price - stop; reward = target - current_price
+    else: risk = stop - current_price; reward = current_price - target
+    rr = clamp_rr(reward / risk) if risk > 0.01 else 0
+    col1, col2, col3 = st.columns(3)
+    with col1: st.metric("Direction", direction)
+    with col2: st.metric("Pullback Zone", f"{entry_zone:.2f}")
+    with col3: st.metric("Current", f"{current_price:.2f}")
+    st.markdown(f"<div style='background-color: #1a3a2a; padding: 15px; border-radius: 8px;'><b>Entry:</b> {current_price:.2f}<br><b>Stop:</b> {stop:.2f}<br><b>Target:</b> {target:.2f}<br><b>Risk:</b> {risk:.2f} pts<br><b>R:R:</b> 1:{rr:.1f}</div>", unsafe_allow_html=True)
+    st.caption(f"💡 Early signal: Prefer entry at pullback zone ({entry_zone:.2f}) when reached.")
 
+
+# ============ 🚀 SESSION BREAKOUT ============
+def run_session_breakout():
+    st.subheader("🚀 Session Breakout")
+    st.caption("Trades the breakout of PM High/Low with confirmation. Works with the trend.")
+    asset_choice = st.selectbox("Select Asset", ["MNQ (Micro Nasdaq)", "M2K (Micro Russell 2000)", "US30 (Micro Dow)", "MES (Micro S&P 500)", "MGC (Micro Gold)"], index=0, key="sb_asset_select")
+    asset_map = {"MNQ (Micro Nasdaq)": ("MNQ=F", "MNQ"), "M2K (Micro Russell 2000)": ("M2K=F", "M2K"), "US30 (Micro Dow)": ("YM=F", "US30"), "MES (Micro S&P 500)": ("MES=F", "MES"), "MGC (Micro Gold)": ("MGC=F", "MGC")}
+    ticker, asset_key = asset_map[asset_choice]
+    asset_name = asset_choice.split(" (")[0]
+    now_utc = datetime.now(timezone.utc); uk_time = now_utc.astimezone(ZoneInfo("Europe/London"))
+    session_key, session_info, session_remaining, next_key, until_next = get_current_session(uk_time)
+    blackout, blackout_reason = is_blackout(uk_time)
+    macro = get_macro_data()
+    tnx = macro['yield_10y']; vix = macro['vix']; dxy = macro['dxy']
+    regime_key, regime_label, regime_size, regime_trail, regime_assets, regime_note = get_yield_regime(tnx)
+    if session_key:
+        st.markdown(f"""<div style='background-color: #1a3a2a; padding: 20px; border-radius: 10px; border: 2px solid #4ade80;'><h2 style='color: #4ade80; margin: 0;'>🟢 {session_info["name"]} WINDOW ACTIVE</h2><p style='color: #e8ecf1;'>Time remaining: <b>{fmt_countdown(session_remaining)}</b></p></div>""", unsafe_allow_html=True)
+    elif blackout:
+        st.markdown(f"""<div style='background-color: #3a1a1a; padding: 20px; border-radius: 10px; border: 2px solid #f87171;'><h2 style='color: #f87171; margin: 0;'>🔴 BLACKOUT — DO NOT TRADE</h2><p style='color: #e8ecf1;'>Reason: {blackout_reason}</p></div>""", unsafe_allow_html=True); return
+    else:
+        st.markdown(f"""<div style='background-color: #2a2a1a; padding: 20px; border-radius: 10px; border: 2px solid #facc15;'><h2 style='color: #facc15; margin: 0;'>⏳ BETWEEN SESSIONS</h2><p style='color: #e8ecf1;'>Next: <b>{SESSIONS[next_key]["name"]}</b> in <b>{fmt_countdown(until_next)}</b></p></div>""", unsafe_allow_html=True); return
+    if vix > 30: st.error(f"🚫 VIX > 30 ({vix:.2f})"); return
+    if uk_time.weekday() == 4 and uk_time.hour >= 18: st.error("🚫 Friday after 6 PM UK"); return
+    with st.spinner(f"Analyzing {asset_name}..."):
+        data = yf.Ticker(ticker).history(period="2d", interval="5m")
+        if data.empty: st.warning(f"No data for {asset_name}"); return
+        today_utc = datetime.now(timezone.utc).date()
+        data_today = data[data.index.date == today_utc]
+        if data_today.empty: data_today = data.tail(100)
+        current_price = data_today['Close'].iloc[-1]
+        atr = calc_atr(data_today); adx, plus_di, minus_di = calc_adx(data_today)
+        vwap = (data_today['Close'] * data_today['Volume']).cumsum() / data_today['Volume'].cumsum()
+        current_vwap = vwap.iloc[-1]
+        ema9 = data_today['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+        ema20 = data_today['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = data_today['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        ny_data = data_today.between_time('08:00', '09:29')
+        if ny_data.empty or len(ny_data) < 5: ny_data = data_today.between_time('07:30', '09:29')
+        if ny_data.empty: st.warning("PM range data not available."); return
+        pm_high = ny_data['High'].max(); pm_low = ny_data['Low'].min(); pm_range = pm_high - pm_low
+    st.markdown("### ✅ Filter Checklist"); checks = []
+    adx_pass = adx > 25; checks.append(("ADX > 25", adx_pass, f"ADX = {adx:.1f}", "+3-5%"))
+    bullish_stack = current_price > ema9 > ema20 > ema50; bearish_stack = current_price < ema9 < ema20 < ema50
+    stack_pass = bullish_stack or bearish_stack; stack_dir = "LONG" if bullish_stack else "SHORT" if bearish_stack else "MIXED"
+    checks.append(("EMA Stack", stack_pass, f"Direction: {stack_dir}", "+3-4%"))
+    vwap_long = current_price > current_vwap; vwap_short = current_price < current_vwap
+    vwap_pass = vwap_long or vwap_short
+    checks.append(("VWAP", vwap_pass, f"Price {'above' if vwap_long else 'below'} VWAP", "+3-4%"))
+    macro_score = 0
+    if dxy < 103: macro_score += 1
+    if tnx < 4.5: macro_score += 1
+    if vix < 25: macro_score += 1
+    macro_pass = macro_score >= 2
+    checks.append(("Macro 2/3", macro_pass, f"DXY {dxy:.2f}, 10Y {tnx:.2f}%, VIX {vix:.2f} — {macro_score}/3", "+2-3%"))
+    vix_pass = vix < 30; checks.append(("VIX < 30", vix_pass, f"VIX = {vix:.2f}", "+5%"))
+    min_range = MIN_NY_RANGE.get(asset_key, 5); range_pass = pm_range >= min_range
+    checks.append(("PM Range Adequate", range_pass, f"{pm_range:.2f} pts (min {min_range})", "prevents fakeouts"))
+    all_pass = all(c[1] for c in checks); passed_count = sum(1 for c in checks if c[1])
+    for name, passed, detail, boost in checks:
+        icon = "✅" if passed else "❌"; color = "#4ade80" if passed else "#f87171"
+        st.markdown(f"<div style='padding: 8px; border-left: 3px solid {color}; margin: 4px 0;'>{icon} <b>{name}</b> — {detail} <span style='color: #a0aec0; font-size: 12px;'>({boost})</span></div>", unsafe_allow_html=True)
+    if not all_pass: st.warning(f"⚠️ {passed_count}/6 filters passed."); return
+    st.success("🟢 ALL 6 FILTERS PASSED")
+    st.markdown("---"); st.markdown("### 📊 Pre-Market Range")
+    col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
+    with col_pm1: st.metric("PM High", f"{pm_high:.2f}")
+    with col_pm2: st.metric("PM Low", f"{pm_low:.2f}")
+    with col_pm3: st.metric("PM Range", f"{pm_range:.2f} pts")
+    with col_pm4: st.metric("Current", f"{current_price:.2f}")
+    breakout_buffer = STOP_BUFFERS.get(asset_key, 5)
+    above_high = current_price > pm_high + breakout_buffer
+    below_low = current_price < pm_low - breakout_buffer
+    st.markdown("---"); st.markdown("### 🚀 Breakout Detection")
+    if above_high and bullish_stack and vwap_long:
+        direction = "LONG"; entry = current_price; stop = safe_stop(entry, "LONG", pm_high, asset_key)
+        risk = entry - stop; target = entry + (pm_range * 1.5)
+        st.success(f"✅ UPSIDE BREAKOUT — above PM High + {breakout_buffer} pts")
+    elif below_low and bearish_stack and vwap_short:
+        direction = "SHORT"; entry = current_price; stop = safe_stop(entry, "SHORT", pm_low, asset_key)
+        risk = stop - entry; target = entry - (pm_range * 1.5)
+        st.error(f"✅ DOWNSIDE BREAKOUT — below PM Low - {breakout_buffer} pts")
+    else:
+        st.info(f"⏳ No confirmed breakout yet.")
+        if not above_high and not below_low:
+            st.markdown(f"- Price inside PM range ({pm_low:.2f} — {pm_high:.2f})")
+            st.markdown(f"- LONG needs: price > **{pm_high + breakout_buffer:.2f}**")
+            st.markdown(f"- SHORT needs: price < **{pm_low - breakout_buffer:.2f}**")
+        return
+    rr = clamp_rr((target - entry) / risk) if risk > 0.01 else 0
+    dollar_risk = risk * TICK_VALUES.get(asset_key, 1.0)
+    base_contracts = 1; final_size = base_contracts * session_info["size"] * regime_size
+    display_size = max(1, round(final_size))
+    st.markdown("### 📋 TRADE PLAN")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.metric("Direction", direction); st.metric("Entry", f"{entry:.2f}")
+        st.metric("Stop", f"{stop:.2f}"); st.metric("Risk", f"{risk:.2f} pts (${dollar_risk:.2f}/contract)")
+    with col_p2:
+        st.metric("Target", f"{target:.2f}"); st.metric("R:R", f"1:{rr:.1f}")
+        st.metric("Size", f"{display_size} contract(s)"); st.metric("Session", session_info["name"])
+    st.markdown("---"); st.markdown("### ⚠️ REMINDERS")
+    st.markdown(f"- ✅ Trade WITH the breakout\n- ✅ Stop opposite PM edge\n- ✅ Target = 1.5× PM Range\n- 🚫 Do NOT chase > 1× ATR past breakout\n- ✅ Exit by {session_info['end']} UK")
+
+
+# ============ STRATEGY SELECTOR ============
 def run_strategy_selector():
-    st.subheader("🎯 Strategy Selector & Decision Engine")
-    st.caption("Automatically recommends the best strategy based on current market conditions")
+    st.subheader("🎯 Strategy Selector — 3-Way Decision Engine")
+    st.caption("Recommends the best of 3 strategies based on live market conditions.")
     macro = get_macro_data()
     tnx = macro.get('yield_10y', 4.20); vix = macro.get('vix', 18.0); dxy = macro.get('dxy', 102.0)
-    analyze_asset = st.selectbox("🎯 Analyze which market?", ["MNQ=F", "M2K=F", "YM=F", "MES=F", "MGC=F"], format_func=lambda x: ASSET_VOLATILITY_PROFILES.get(x, {}).get("name", x), index=0, key="strategy_selector_asset")
+    analyze_asset = st.selectbox("🎯 Analyze which market?", ["MNQ=F", "M2K=F", "YM=F", "MES=F", "MGC=F"],
+                                  format_func=lambda x: ASSET_VOLATILITY_PROFILES.get(x, {}).get("name", x),
+                                  index=0, key="ss_asset")
     market = classify_market_conditions(analyze_asset)
-    market_class = market.get('classification', 'UNKNOWN')
-    trend_direction = market.get('trend_direction', 'MIXED')
-    st.info(f"📊 Analyzing **{market.get('asset_name', analyze_asset)}** — Typical NY Range: {market.get('typical_range', 'N/A')} pts")
-    is_high_yield = tnx > 4.5; is_elevated_yield = 4.3 < tnx <= 4.5; is_normal_yield = tnx <= 4.3
-    is_high_volatility = vix > 30
+    market_class = market.get('classification', 'UNKNOWN'); adx = market.get('adx', 0); trend_dir = market.get('trend_direction', 'MIXED')
+    regime_key, regime_label, regime_size, regime_trail, regime_assets, regime_note = get_yield_regime(tnx)
     now_utc = datetime.now(timezone.utc); uk_time = now_utc.astimezone(ZoneInfo("Europe/London"))
-    in_primary_window = (uk_time.hour == 15) or (uk_time.hour == 16 and uk_time.minute <= 30)
-    if is_high_volatility: recommended_strategy = "⛔ NO TRADE - SIT OUT"; position_size = "0%"
-    elif is_high_yield and market_class == "RANGING": recommended_strategy = "⚡ High Yield Protocol"; position_size = "25%"
-    elif is_high_yield and market_class == "TRENDING": recommended_strategy = "⛔ NO TRADE - SIT OUT"; position_size = "0%"
-    elif is_normal_yield and market_class == "TRENDING": recommended_strategy = "📈 Trend-Fade Hybrid"; position_size = "50-75%"
-    elif is_normal_yield and market_class == "RANGING": recommended_strategy = "⚡ High Yield Protocol (Low Yield)"; position_size = "50%"
-    elif is_elevated_yield:
-        recommended_strategy = "📈 Trend-Fade Hybrid (Reduced)" if market_class == "TRENDING" else "⚡ High Yield Protocol (Reduced)"
-        position_size = "50%"
-    else: recommended_strategy = "⛔ NO TRADE - SIT OUT"; position_size = "0%"
+    session_key, session_info, _, next_key, until_next = get_current_session(uk_time)
+    blackout, reason = is_blackout(uk_time)
+    st.info(f"📊 Analyzing **{market.get('asset_name', analyze_asset)}** — Typical NY Range: {market.get('typical_range', 'N/A')}")
+    if session_key and not blackout: session_mult = session_info["size"]
+    else: session_mult = 0.0
+    combined_mult = session_mult * regime_size
+    if vix > 30:
+        rec = "⛔ SIT OUT — VIX > 30"; position = "0%"; why = [f"🔴 VIX {vix:.2f} extreme volatility", "No strategy works here"]
+    elif blackout or not session_key:
+        rec = "⛔ SIT OUT — OUTSIDE SESSION"; position = "0%"; why = [f"🔴 {reason if blackout else 'Not in active window'}", f"⏳ Next: {SESSIONS[next_key]['name']} in {fmt_countdown(until_next)}"]
+    elif market_class == "TRENDING" and adx > 30:
+        rec = "🚀 Session Breakout"; position = f"{int(combined_mult * 100)}%"; why = [f"🟢 Strong trend (ADX {adx})", f"📈 Direction: {trend_dir}", "PM High/Low breakout with confirmation"]
+    elif market_class == "TRENDING" and adx > 25:
+        rec = "🚀 Pure Trend Rider"; position = f"{int(combined_mult * 100)}%"; why = [f"🟢 Market TRENDING (ADX {adx})", f"📈 Direction: {trend_dir}", "Breakout with trailing stops"]
+    elif market_class == "TRENDING":
+        rec = "📈 Trend-Fade Hybrid"; position = f"{int(combined_mult * 75)}%"; why = [f"🟡 Trend forming (ADX {adx})", "Use pullback entries", "Wait for ADX > 25 for breakout"]
+    elif market_class == "RANGING":
+        rec = "⛔ SIT OUT — RANGING MARKET"; position = "0%"; why = ["🟡 Market is ranging", "No high-quality setup available"]
+    else:
+        rec = "⛔ SIT OUT — UNCLEAR"; position = "0%"; why = ["🟡 No clear trend or range"]
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.markdown("### 📊 Current Market Conditions")
-        yield_color = "#f87171" if is_high_yield else "#facc15" if is_elevated_yield else "#4ade80"
-        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin-bottom: 8px;'><b>US10Y:</b> <span style='color: {yield_color};'>{tnx:.2f}%</span></div>", unsafe_allow_html=True)
-        vix_color = "#4ade80" if vix < 25 else "#facc15" if vix < 30 else "#f87171"
-        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin-bottom: 8px;'><b>VIX:</b> <span style='color: {vix_color};'>{vix:.2f}</span></div>", unsafe_allow_html=True)
-        market_color = "#4ade80" if market_class == "TRENDING" else "#facc15" if market_class == "RANGING" else "#f87171"
-        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin-bottom: 8px;'><b>Market:</b> <span style='color: {market_color};'>{market_class}</span><br><small>ADX: {market.get('adx', 0):.1f} | NY Range: {market.get('ny_range', 0):.1f}</small></div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px;'><b>Trend:</b> {trend_direction} | <b>DXY:</b> {dxy:.2f}</div>", unsafe_allow_html=True)
+        st.markdown("### 📊 Current Conditions")
+        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin: 6px 0;'><b>US10Y:</b> {tnx:.2f}% ({regime_label})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin: 6px 0;'><b>VIX:</b> {vix:.2f}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin: 6px 0;'><b>Market:</b> {market_class} (ADX {adx})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color: #1c2129; padding: 12px; border-radius: 8px; margin: 6px 0;'><b>Session:</b> {session_info['name'] if session_info else 'BLACKOUT'}</div>", unsafe_allow_html=True)
     with col2:
         st.markdown("### 🎯 Recommended Strategy")
-        if "NO TRADE" in recommended_strategy:
-            st.markdown(f"<div style='background-color: #3a1a1a; padding: 20px; border-radius: 8px; border: 3px solid #f87171; text-align: center;'><h2 style='color: #f87171;'>{recommended_strategy}</h2><p style='color: #a0aec0;'>Position: {position_size}</p></div>", unsafe_allow_html=True)
-        elif "Trend-Fade" in recommended_strategy:
-            st.markdown(f"<div style='background-color: #1a3a2a; padding: 20px; border-radius: 8px; border: 3px solid #4ade80; text-align: center;'><h2 style='color: #4ade80;'>{recommended_strategy}</h2><p style='color: #a0aec0;'>Position: {position_size}</p></div>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div style='background-color: #3a2a1a; padding: 20px; border-radius: 8px; border: 3px solid #facc15; text-align: center;'><h2 style='color: #facc15;'>{recommended_strategy}</h2><p style='color: #a0aec0;'>Position: {position_size}</p></div>", unsafe_allow_html=True)
-    st.markdown("---")
-    st.metric("Current UK Time", uk_time.strftime("%H:%M"), delta="✅ Primary Window" if in_primary_window else "⏳ Outside Window")
+        color = "#f87171" if "SIT OUT" in rec else "#4ade80" if "Trend" in rec else "#facc15"
+        st.markdown(f"<div style='background-color: #1c2129; padding: 20px; border-radius: 8px; border: 3px solid {color}; text-align: center;'><h2 style='color: {color};'>{rec}</h2><p style='color: #a0aec0;'>Position size: {position}</p></div>", unsafe_allow_html=True)
+    st.markdown("### 📋 Decision Reasoning")
+    for w in why: st.markdown(f"- {w}")
+    st.markdown("---"); st.markdown("### 📊 3-Strategy Comparison")
+    comp = pd.DataFrame({
+        "Feature": ["Market Condition", "Entry Type", "Stop", "Target", "Size", "Win Rate"],
+        "📈 Trend-Fade": ["TRENDING (ADX > 25)", "Pullback to 9 EMA/VWAP", "Beyond pullback swing", "Prior swing high/low", "50-75%", "50-60%"],
+        "🚀 Trend Rider": ["TRENDING (ADX > 25)", "Breakout + trail", "Prior swing ± buffer", "None — trail", "50-100%", "48-55%"],
+        "🚀 Session Breakout": ["TRENDING (ADX > 30)", "PM High/Low + buffer", "PM edge ± buffer", "1.5× PM Range", "50-100%", "55-65%"],
+    })
+    st.dataframe(comp, hide_index=True, use_container_width=True)
 
-DB_JOURNAL_PATH = Path("trading_journal.db")
-def init_journal_db():
-    conn = sqlite3.connect(DB_JOURNAL_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT NOT NULL, symbol TEXT NOT NULL, direction TEXT NOT NULL, entry_price REAL NOT NULL, stop_loss REAL NOT NULL, take_profit REAL NOT NULL, exit_price REAL, pnl REAL, outcome TEXT, macro_snapshot TEXT, notes TEXT)""")
-    conn.commit(); conn.close()
 
-def run_journal_tab():
-    st.subheader("📝 Private Trading Journal")
-    with st.expander("➕ Log New Trade Entry", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            j_symbol = st.selectbox("Symbol", ["MNQ", "M2K", "US30", "MGC", "MES", "NVDA", "SMH"])
-            j_direction = st.selectbox("Direction", ["Long (Buy)", "Short (Sell)"])
-        with c2:
-            step = 0.10 if j_symbol == "M2K" else 0.25
-            j_entry = st.number_input("Entry Price", step=step)
-            j_stop = st.number_input("Stop Loss", step=step)
-        with c3:
-            j_target = st.number_input("Take Profit", step=step)
-        j_notes = st.text_area("Why did you take this trade?", height=100)
-        if st.button("📌 Log This Trade", type="primary"): st.success("Trade logged!")
-
+# ============ STUBS ============
+def render_smc_cheat_sheet(): st.subheader("🎯 SMC Cheat Sheet"); st.info("Weak High = SELL ZONE. Weak Low = BOUNCE ZONE.")
+def run_sniper_entry_theory(): st.subheader("🎯 Sniper Entry Theory"); st.info("15-point buffer filters fakeouts.")
+def run_indices_bond_tracker(): st.subheader("📊 Indices & Bond Tracker"); st.info("VIX / Bond reference guide.")
+def run_vwap_ema_strategy(): st.subheader("📊 VWAP & 9 EMA Strategy"); st.success("✅ LONG: Price > 9 EMA + > VWAP + DXY weak")
+def run_ny_afternoon_sniper(): st.subheader("🇺🇸 NY Afternoon Sniper"); st.info("3:30-4:30 PM UK session.")
+def run_smart_money_levels(): st.subheader("🎯 Smart Money Levels")
+def run_asia_sniper(): st.subheader("🌏 Asia Session Sniper"); st.info("Loading Asian market data...")
+def run_level_marker(): st.subheader("🎯 Global Session Sniper Triggers"); st.info("Loading session data...")
 def run_treasury_dashboard():
     st.subheader("🏛️ Treasury Intervention Tracker")
     status, icon = TreasuryIntervention.get_buyback_status()
-    col_status1, col_status2, col_status3 = st.columns(3)
-    with col_status1: st.metric("Buyback Program", f"{icon} {status}")
-    with col_status2: st.metric("10Y Cap", f"{TreasuryIntervention.YIELD_CAP_10Y:.2f}%")
-    with col_status3: st.metric("30Y Cap", f"{TreasuryIntervention.YIELD_CAP_30Y:.2f}%")
-
-def run_asia_sniper():
-    st.subheader("🌏 Asia Session Sniper Triggers")
-    st.info("Loading Asian market data...")
-
-def run_level_marker():
-    st.subheader("🎯 Global Session Sniper Triggers")
-    st.info("Loading session data...")
-
+    col1, col2, col3 = st.columns(3)
+    with col1: st.metric("Buyback Program", f"{icon} {status}")
+    with col2: st.metric("10Y Cap", f"{TreasuryIntervention.YIELD_CAP_10Y:.2f}%")
+    with col3: st.metric("30Y Cap", f"{TreasuryIntervention.YIELD_CAP_30Y:.2f}%")
 def run_m2k_shortcut():
-    st.subheader("📉 M2K (Micro Russell 2000) — Direct Analysis")
-    st.caption("Small cap focus — High Yield + Trend-Fade recommendations")
+    st.subheader("📉 M2K (Micro Russell 2000)")
     market = classify_market_conditions("M2K=F")
-    st.markdown(f"**Market Classification:** {market.get('classification', 'UNKNOWN')}")
-    st.markdown(f"**Typical NY Range:** {market.get('typical_range', 'N/A')} pts")
-    st.markdown(f"**Confidence:** {market.get('confidence', 0)}%")
-    st.markdown(f"**Stop Buffer:** {STOP_BUFFERS.get('M2K', 5)} pts")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⚡ Launch High Yield Protocol (M2K)", key="m2k_hy_btn", use_container_width=True):
-            st.session_state['nav_redirect'] = "⚡ High Yield Protocol"
-            st.rerun()
-    with col2:
-        if st.button("📈 Launch Trend-Fade Hybrid (M2K)", key="m2k_tfh_btn", use_container_width=True):
-            st.session_state['nav_redirect'] = "📈 Trend-Fade Hybrid"
-            st.rerun()
-    st.markdown("---")
-    st.info("**🏭 M2K Notes:** Rate-sensitive. Tighter ranges. Best VIX 18-25. Typical NY Range: **15-30 pts**. Buffer: **3 pts**.")
-
+    st.markdown(f"**Classification:** {market.get('classification')}")
+    st.markdown(f"**Typical Range:** {market.get('typical_range')}")
 def run_us30_shortcut():
-    st.subheader("🏛️ US30 (Micro Dow) — Direct Analysis")
-    st.caption("Blue chip focus — High Yield + Trend-Fade recommendations")
+    st.subheader("🏛️ US30 (Micro Dow)")
     market = classify_market_conditions("YM=F")
-    st.markdown(f"**Market Classification:** {market.get('classification', 'UNKNOWN')}")
-    st.markdown(f"**Typical NY Range:** {market.get('typical_range', 'N/A')} pts")
-    st.markdown(f"**Confidence:** {market.get('confidence', 0)}%")
-    st.markdown(f"**Stop Buffer:** {STOP_BUFFERS.get('US30', 20)} pts")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⚡ Launch High Yield Protocol (US30)", key="us30_hy_btn", use_container_width=True):
-            st.session_state['nav_redirect'] = "⚡ High Yield Protocol"
-            st.rerun()
-    with col2:
-        if st.button("📈 Launch Trend-Fade Hybrid (US30)", key="us30_tfh_btn", use_container_width=True):
-            st.session_state['nav_redirect'] = "📈 Trend-Fade Hybrid"
-            st.rerun()
-    st.markdown("---")
-    st.info("**🏛️ US30 Notes:** Trends beautifully. Ranges 5-8× MNQ. Typical NY Range: **150-350 pts**. Buffer: **20 pts**. Ticker: `YM=F`.")
+    st.markdown(f"**Classification:** {market.get('classification')}")
+    st.markdown(f"**Typical Range:** {market.get('typical_range')}")
+
 
 # ============ MAIN APP ============
 def run_app():
-    load_dotenv(); init_db(); init_journal_db()
+    load_dotenv(); init_db()
     st.set_page_config(page_title="TradeTerminal Pro", layout="wide", initial_sidebar_state="expanded")
     st.markdown("""
     <style>
@@ -889,59 +801,68 @@ def run_app():
     """, unsafe_allow_html=True)
     DEFAULT_NAV = "🏠 Dashboard"
     NAV_OPTIONS = [
-        "🏠 Dashboard", "📈 Charts", "📅 Regime Report", "🤖 AI Bubble Watch",
-        "💵 DXY Dashboard", "📊 Indices & Bond Tracker", "🎯 Market Levels", "📝 Journal",
-        "🌏 Asia Sniper", "🇺🇸 NY Afternoon", "📈 VWAP & 9 EMA", "⚡ High Yield Protocol",
-        "📈 Trend-Fade Hybrid", "📉 M2K (Russell 2000)", "🏛️ US30 (Dow Jones)",
-        "🎯 Smart Money Levels", "📋 SMC Cheat Sheet", "🏛️ Treasury Tracker",
-        "🎯 Strategy Selector", "🎯 Sniper Entry Theory",
+        "🏠 Dashboard", "📈 Charts", "🎯 Strategy Selector",
+        "🚀 Pure Trend Rider", "📈 Trend-Fade Hybrid", "🚀 Session Breakout",
+        "📉 M2K (Russell 2000)", "🏛️ US30 (Dow Jones)",
+        "📊 Indices & Bond Tracker", "📈 VWAP & 9 EMA", "🇺🇸 NY Afternoon",
+        "🌏 Asia Sniper", "🎯 Market Levels", "🎯 Smart Money Levels",
+        "📋 SMC Cheat Sheet", "🏛️ Treasury Tracker", "🎯 Sniper Entry Theory",
     ]
     if 'nav_redirect' not in st.session_state: st.session_state['nav_redirect'] = None
     if 'nav_selection' not in st.session_state: st.session_state['nav_selection'] = DEFAULT_NAV
     if st.session_state['nav_redirect'] is not None:
-        target = st.session_state['nav_redirect']
-        if target in NAV_OPTIONS: st.session_state['nav_selection'] = target
+        tgt = st.session_state['nav_redirect']
+        if tgt in NAV_OPTIONS: st.session_state['nav_selection'] = tgt
         st.session_state['nav_redirect'] = None
-    if st.session_state['nav_selection'] not in NAV_OPTIONS:
-        st.session_state['nav_selection'] = DEFAULT_NAV
+    if st.session_state['nav_selection'] not in NAV_OPTIONS: st.session_state['nav_selection'] = DEFAULT_NAV
     with st.sidebar:
-        st.markdown("""<div class="sidebar-logo"><h1>⚡ TradeTerminal</h1><p>Pro Market Terminal</p></div>""", unsafe_allow_html=True)
+        st.markdown("""<div class="sidebar-logo"><h1>⚡ TradeTerminal</h1><p>Pro v2.3 — Breakout</p></div>""", unsafe_allow_html=True)
         nav_section = st.radio("Navigation", NAV_OPTIONS, index=NAV_OPTIONS.index(st.session_state['nav_selection']), key="nav_selection", label_visibility="collapsed")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        if st.button("🔄 Refresh Data", use_container_width=True): st.rerun()
-        auto_save = st.checkbox("💾 Auto-Save Snapshots", value=True)
+        st.markdown("### 🕐 Session Clock")
+        now_utc = datetime.now(timezone.utc); uk = now_utc.astimezone(ZoneInfo("Europe/London"))
+        st.markdown(f"**UK:** {uk.strftime('%H:%M')}")
+        s_key, s_info, s_rem, n_key, n_delta = get_current_session(uk)
+        if s_key: st.success(f"{s_info['name']} — {fmt_countdown(s_rem)} left")
+        else: st.info(f"⏳ {SESSIONS[n_key]['name']} in {fmt_countdown(n_delta)}")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        st.markdown("### 📊 Market Status")
+        st.markdown("### 📊 Macro")
         try:
             macro = get_macro_data()
             tnx = macro.get('yield_10y', 4.20); vix = macro.get('vix', 18.0)
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                yc = "#f87171" if tnx > 4.5 else "#facc15" if tnx > 4.3 else "#4ade80"
-                st.markdown(f"<div style='text-align:center;'><span style='color:#a0aec0; font-size:11px;'>10Y</span><br><span style='color:{yc}; font-size:16px; font-weight:bold;'>{tnx:.2f}%</span></div>", unsafe_allow_html=True)
-            with col_s2:
-                vc = "#4ade80" if vix < 20 else "#facc15" if vix < 30 else "#f87171"
-                st.markdown(f"<div style='text-align:center;'><span style='color:#a0aec0; font-size:11px;'>VIX</span><br><span style='color:{vc}; font-size:16px; font-weight:bold;'>{vix:.2f}</span></div>", unsafe_allow_html=True)
+            rk, rl, _, _, _, _ = get_yield_regime(tnx)
+            yc = "#f87171" if tnx > 4.5 else "#facc15" if tnx > 4.3 else "#4ade80"
+            vc = "#4ade80" if vix < 20 else "#facc15" if vix < 30 else "#f87171"
+            st.markdown(f"<div style='font-size:13px;'><b>10Y:</b> <span style='color:{yc};'>{tnx:.2f}%</span> ({rl})</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:13px;'><b>VIX:</b> <span style='color:{vc};'>{vix:.2f}</span></div>", unsafe_allow_html=True)
         except: pass
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        st.caption("⚡ TradeTerminal Pro v2.1 — Bug-Fixed Build")
-    st.title("⚡ TradeTerminal Pro - Market Terminal")
+        if st.button("🔄 Refresh", use_container_width=True): st.rerun()
+        st.caption("⚡ v2.3")
+    st.title("⚡ TradeTerminal Pro")
     if nav_section == "🏠 Dashboard":
         try:
-            mt = get_macro_data(); od = get_options_sentiment("SPY")
-            fg = calc_fear_greed(mt['vix'], od['ratio'], mt['dxy']); ev = get_economic_calendar()
+            mt = get_macro_data(); fg = calc_fear_greed(mt['vix'], 0.5, mt['dxy'])
             c1, c2, c3, c4 = st.columns(4)
-            with c1: st.markdown(f"<div class='eco-card'><h4>🧠 Fear & Greed</h4><h2>{fg['label']}</h2><small>Score: {fg['score']}/100</small></div>", unsafe_allow_html=True)
-            with c2: st.markdown(f"<div class='eco-card'><h4>📊 Options (SPY)</h4><h3>PCR: {od['ratio']}</h3><small>{od['sentiment']}</small></div>", unsafe_allow_html=True)
-            with c3:
-                txt = "".join([f"**{e['name']}**\n⏳ {e['countdown']}\n\n" for e in ev])
-                st.markdown(f"<div class='eco-card'><h4>🕒 Economic Countdown</h4>{txt}</div>", unsafe_allow_html=True)
-            with c4: st.markdown(f"<div class='eco-card'><h4>Bond Yields</h4><b>10Y:</b> {mt['yield_10y']:.2f}%<br><b>30Y:</b> {mt['yield_30y']:.2f}%<br><b>Buyback:</b> {mt['buyback_icon']} {mt['buyback_status']}</div>", unsafe_allow_html=True)
+            with c1: st.markdown(f"<div class='eco-card'><h4>🧠 Fear & Greed</h4><h2>{fg['label']}</h2><small>{fg['score']}/100</small></div>", unsafe_allow_html=True)
+            with c2: st.markdown(f"<div class='eco-card'><h4>📊 US10Y</h4><h2>{mt['yield_10y']:.2f}%</h2></div>", unsafe_allow_html=True)
+            with c3: st.markdown(f"<div class='eco-card'><h4>😱 VIX</h4><h2>{mt['vix']:.2f}</h2></div>", unsafe_allow_html=True)
+            with c4: st.markdown(f"<div class='eco-card'><h4>💵 DXY</h4><h2>{mt['dxy']:.2f}</h2></div>", unsafe_allow_html=True)
         except: pass
+        st.markdown("---"); st.markdown("### 🎯 Quick Actions")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            if st.button("🎯 Strategy Selector", use_container_width=True, key="dash_ss"):
+                st.session_state['nav_redirect'] = "🎯 Strategy Selector"; st.rerun()
+        with col_b:
+            if st.button("🚀 Pure Trend Rider", use_container_width=True, key="dash_ptr"):
+                st.session_state['nav_redirect'] = "🚀 Pure Trend Rider"; st.rerun()
+        with col_c:
+            if st.button("🚀 Session Breakout", use_container_width=True, key="dash_sb"):
+                st.session_state['nav_redirect'] = "🚀 Session Breakout"; st.rerun()
     elif nav_section == "📈 Charts":
         st.subheader("📈 Asset Analysis")
-        asset_keys = list(ASSETS.keys())
-        cols_per_row = 6
+        asset_keys = list(ASSETS.keys()); cols_per_row = 6
         for i in range(0, len(asset_keys), cols_per_row):
             row_keys = asset_keys[i:i+cols_per_row]; cols = st.columns(cols_per_row)
             for j, key in enumerate(row_keys):
@@ -949,62 +870,21 @@ def run_app():
                     if st.button(ASSETS[key]['symbol'], key=f"asset_btn_{key}", use_container_width=True):
                         st.session_state['selected_asset'] = key
         if 'selected_asset' not in st.session_state: st.session_state['selected_asset'] = "MNQ"
-        render_asset(st.session_state['selected_asset'], auto_save)
-    elif nav_section == "📅 Regime Report":
-        st.subheader("📅 12-Month Regime Report")
-        selected_assets = st.multiselect("Select Assets", options=list(ASSETS.keys()), default=["MGC","MNQ","MES"])
-        for asset_key in selected_assets:
-            monthly = get_monthly_regime_report(asset_key)
-            if monthly is not None:
-                st.subheader(f"📈 {ASSETS[asset_key]['symbol']} Monthly Regime")
-                for i, row in monthly.iterrows(): st.write(f"{row['month_str']}: {row['overall_score']:.1f}/10 — {row['overall_bias']}")
-            else: st.info(f"No historical data for {ASSETS[asset_key]['symbol']} yet.")
-    elif nav_section == "🤖 AI Bubble Watch":
-        st.subheader("🤖 AI & Semiconductor Bubble Watch")
-        try:
-            nvda = yf.Ticker("NVDA").history(period="6mo"); smh = yf.Ticker("SMH").history(period="6mo")
-            mnq = yf.Ticker("MNQ=F").history(period="1d", interval="5m")
-            dxy = yf.Ticker("DX-Y.NYB").history(period="1d", interval="5m")
-            tnx = yf.Ticker("^TNX").history(period="1d", interval="5m")
-            nvda_price = nvda['Close'].iloc[-1] if not nvda.empty else 0.0
-            nvda_200 = sma(nvda['Close'].tolist(), 200) if not nvda.empty else 0.0
-            smh_price = smh['Close'].iloc[-1] if not smh.empty else 0.0
-            smh_200 = sma(smh['Close'].tolist(), 200) if not smh.empty else 0.0
-            dxy_val = dxy['Close'].iloc[-1] if not dxy.empty else 0.0
-            tnx_val = tnx['Close'].iloc[-1] if not tnx.empty else 0.0
-            mnq_change = ((mnq['Close'].iloc[-1] - mnq['Close'].iloc[0]) / mnq['Close'].iloc[0]) * 100 if not mnq.empty else 0.0
-            risk_score = 0; warnings = []
-            if nvda_price > 0 and nvda_200 > 0 and nvda_price < nvda_200 * 0.95:
-                risk_score += 30; warnings.append("🔴 NVDA BROKEN 200-DMA")
-            if smh_price > 0 and smh_200 > 0 and smh_price < smh_200 * 0.95:
-                risk_score += 30; warnings.append("🔴 SMH BROKEN 200-DMA")
-            if dxy_val > 105 or tnx_val > 4.8: risk_score += 20; warnings.append("🔴 High Macro Pressure")
-            elif dxy_val > 103 or tnx_val > 4.5: risk_score += 10; warnings.append("⚠️ Moderate Macro Pressure")
-            if mnq_change < -1.5: risk_score += 20; warnings.append("🔴 MNQ Down > 1.5%")
-            elif mnq_change < -0.5: risk_score += 10; warnings.append("⚠️ MNQ Weak")
-            if risk_score >= 70: alert_color = "#f87171"; alert_icon = "🔴"; alert_text = "HIGH RISK"
-            elif risk_score >= 40: alert_color = "#facc15"; alert_icon = "🟡"; alert_text = "MODERATE RISK"
-            else: alert_color = "#4ade80"; alert_icon = "🟢"; alert_text = "LOW RISK"
-            col_b1, col_b2 = st.columns([1, 2])
-            with col_b1: st.markdown(f"<div class='eco-card'><h3 style='color: {alert_color};'>{alert_icon} {alert_text}</h3><h1 style='color: {alert_color}; font-size: 48px;'>{risk_score}/100</h1><small>Risk Score</small></div>", unsafe_allow_html=True)
-            with col_b2: st.markdown(f"<div class='eco-card'><h4>📊 Key Metrics</h4><b>NVDA:</b> ${nvda_price:.2f}<br><b>SMH:</b> ${smh_price:.2f}<br><b>DXY:</b> {dxy_val:.2f} | <b>10Y:</b> {tnx_val:.2f}%</div>", unsafe_allow_html=True)
-            if warnings: st.warning("**⚠️ Alerts:** " + " | ".join(warnings))
-        except: st.warning("🤖 AI Bubble Watch temporarily offline.")
-    elif nav_section == "💵 DXY Dashboard": render_dxy_dashboard()
-    elif nav_section == "📊 Indices & Bond Tracker": run_indices_bond_tracker()
-    elif nav_section == "🎯 Market Levels": run_level_marker()
-    elif nav_section == "📝 Journal": run_journal_tab()
-    elif nav_section == "🌏 Asia Sniper": run_asia_sniper()
-    elif nav_section == "🇺🇸 NY Afternoon": run_ny_afternoon_sniper()
-    elif nav_section == "📈 VWAP & 9 EMA": run_vwap_ema_strategy()
-    elif nav_section == "⚡ High Yield Protocol": run_high_yield_protocol()
+        st.info(f"Selected: {st.session_state['selected_asset']} (chart module simplified)")
+    elif nav_section == "🎯 Strategy Selector": run_strategy_selector()
+    elif nav_section == "🚀 Pure Trend Rider": run_pure_trend_rider()
     elif nav_section == "📈 Trend-Fade Hybrid": run_trend_fade_hybrid()
+    elif nav_section == "🚀 Session Breakout": run_session_breakout()
     elif nav_section == "📉 M2K (Russell 2000)": run_m2k_shortcut()
     elif nav_section == "🏛️ US30 (Dow Jones)": run_us30_shortcut()
+    elif nav_section == "📊 Indices & Bond Tracker": run_indices_bond_tracker()
+    elif nav_section == "📈 VWAP & 9 EMA": run_vwap_ema_strategy()
+    elif nav_section == "🇺🇸 NY Afternoon": run_ny_afternoon_sniper()
+    elif nav_section == "🌏 Asia Sniper": run_asia_sniper()
+    elif nav_section == "🎯 Market Levels": run_level_marker()
     elif nav_section == "🎯 Smart Money Levels": run_smart_money_levels()
     elif nav_section == "📋 SMC Cheat Sheet": render_smc_cheat_sheet()
     elif nav_section == "🏛️ Treasury Tracker": run_treasury_dashboard()
-    elif nav_section == "🎯 Strategy Selector": run_strategy_selector()
     elif nav_section == "🎯 Sniper Entry Theory": run_sniper_entry_theory()
 
 if __name__ == "__main__":
